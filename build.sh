@@ -49,6 +49,14 @@ set -u
 LIPS=$(cd "$(dirname "$0")" && pwd)
 . "$LIPS/config.sh"
 
+# ver_ge, rampart_version and MIN_RAMPART, so the version floor here is
+# the same comparison setup.sh gates on rather than a second one. It
+# wants HERE set by the caller -- setup.sh and servers.sh both do -- and
+# under `set -u` it exits without it.
+HERE=$LIPS
+[ -r "$LIPS/tools/rampart-find.sh" ] && . "$LIPS/tools/rampart-find.sh"
+MIN_RAMPART=${MIN_RAMPART:-0.7.5}
+
 JOBS=4
 MEM=70
 YES=0
@@ -116,21 +124,36 @@ stage_check() {
     say "database"  "$DB"
     echo
     echo "  prerequisites"
+    PREREQ=0
+    # ENFORCED, not just printed. The floor is real: 0.7.3 runs every
+    # stage and fails somewhere deeper, where the cause is no longer
+    # obvious. Checked on the `rampart` that is on PATH, because that is
+    # the one every stage below invokes.
     if have rampart; then
-        say "  rampart" "$(rampart -v 2>&1 | head -1)"
+        rv=$(rampart_version "$(command -v rampart)" 2>/dev/null)
+        if [ -z "$rv" ]; then
+            say "  rampart" "found, but it reports no version"; PREREQ=1
+        elif ver_ge "$rv" "$MIN_RAMPART"; then
+            say "  rampart" "$rv"
+        else
+            say "  rampart" "$rv -- TOO OLD, needs $MIN_RAMPART or newer"
+            PREREQ=1
+        fi
     else
         say "  rampart" "MISSING -- curl -fsSL https://get.rampart.dev/ | sh"
+        PREREQ=1
     fi
     for m in rampart-sql rampart-curl rampart-html; do
         if rampart -gc "require(\"$m\");" >/dev/null 2>&1
-        then say "  $m" "ok"; else say "  $m" "MISSING"; fi
+        then say "  $m" "ok"; else say "  $m" "MISSING"; PREREQ=1; fi
     done
     if have python3r; then
         if python3r -I -c 'import libzim' >/dev/null 2>&1
         then say "  python3r libzim" "ok"
-        else say "  python3r libzim" "MISSING -- pip3r install libzim"; fi
+        else say "  python3r libzim" "MISSING -- pip3r install libzim"
+             PREREQ=1; fi
     else
-        say "  python3r" "MISSING (rampart's python)"
+        say "  python3r" "MISSING (rampart's python)"; PREREQ=1
     fi
     for c in curl zimwriterfs kiwix-manage; do
         if have "$c"; then
@@ -138,7 +161,7 @@ stage_check() {
         elif [ -x "$LIPS/zim/bin/$c" ]; then
             say "  $c" "$LIPS/zim/bin/$c (tools/setup-kiwix.sh put it there)"
         elif [ "$c" = curl ]; then
-            say "  curl" "MISSING -- every download needs it"
+            say "  curl" "MISSING -- every download needs it"; PREREQ=1
         else
             say "  $c" "missing -- ./build.sh kiwix installs it in zim/bin"
         fi
@@ -185,6 +208,12 @@ stage_check() {
         say "  news" "not built yet"
     fi
     echo
+    if [ "$PREREQ" -ne 0 ]; then
+        echo "  SOMETHING ABOVE IS MISSING OR TOO OLD. The build will fail on"
+        echo "  the first stage that needs it, so fix it before starting."
+        echo
+        return 1
+    fi
 }
 
 # ------------------------------------------------------------------- urls
@@ -324,7 +353,28 @@ stage_index() {
     confirm "index builds the fulltext index over ~50M documents (~12 h)." || return 0
     # An index already in SYSINDEX is skipped, so this resumes: it is the
     # one that was interrupted which needs --rebuild to fold in the rest.
-    run rampart "$LIPS/tools/corpus-index.js" --db "$DB" "$MEM"
+    run rampart "$LIPS/tools/corpus-index.js" --db "$DB" "$MEM" \
+        || die "the index build failed -- do not package this database"
+
+    # VERIFY, do not trust the exit status. A fulltext build killed part
+    # way through leaves the index registered in SYSINDEX with an empty
+    # .dat: every query then matches nothing and raises no error. Check
+    # that all three exist AND that a term that must match does.
+    local have miss hits
+    have=$(rampart "$LIPS/tools/corpus-index.js" --db "$DB" --list 2>/dev/null)
+    miss=""
+    for ix in corpus_cx corpus_src corpus_ttl; do
+        printf '%s' "$have" | grep -q "$ix" || miss="$miss $ix"
+    done
+    [ -z "$miss" ] || die "missing after the build:$miss"
+    hits=$(rampart -gc 'var S=require("rampart-sql"), u=rampart.utils;
+        var s = new S.init("'"$DB"'"); var n = 0;
+        s.exec("select Title from corpus where Doc likep ?;",
+               ["photosynthesis"], { maxRows: 5 }, function () { n++; });
+        u.printf("%d", n);' 2>/dev/null)
+    [ "${hits:-0}" -gt 0 ] \
+        || die "the index answers nothing for a term that must match -- it is empty"
+    say "verified" "three indexes present, and they answer"
 }
 
 # ------------------------------------------------------------------ links
@@ -368,6 +418,12 @@ stage_news() {
     head_ "news"
     LOG=$NOTES/build-news.log
     [ -f "$DB/corpus.tbl" ] || die "no corpus -- the news window is measured from it"
+    # news-zim.js asks the corpus, once per candidate article, whether it
+    # already holds that page. Through the SrcPath btree those are
+    # lookups; without it each one scans 200 GB, and a cold window asks
+    # 7,000 times. Refuse rather than crawl.
+    [ -f "$DB/corpus_src.btr" ] \
+        || die "the news stage needs the SrcPath index: run ./build.sh index first"
     have zimwriterfs || die "zimwriterfs not found (zim-tools); the news ZIM needs it"
     STATE=$LIPS/build/news-src/cache/state.json
     if [ ! -f "$STATE" ]; then
@@ -382,9 +438,12 @@ stage_news() {
     echo "    0 5 * * *  $LIPS/tools/news-daily.sh --publish >> $NOTES/news-daily.log 2>&1"
 }
 
+# Only check returns a status worth propagating -- every other stage
+# calls die() on failure. A non-zero exit lets check gate a script.
+RC=0
 for s in $STAGES; do
     case "$s" in
-        check)  stage_check ;;
+        check)  stage_check || RC=1 ;;
         urls)   stage_urls ;;
         fetch)  stage_fetch ;;
         meta)   stage_meta ;;
@@ -397,3 +456,4 @@ for s in $STAGES; do
     esac
 done
 printf '\n=== build.sh done  %s\n' "$(date '+%F %T')"
+exit $RC
