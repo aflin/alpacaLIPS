@@ -817,7 +817,10 @@ if [ "$WANT_NEWS" -eq 1 ]; then
     fi
 
     # The zim, only where it can be served.
-    NZIM_NAME=$(echo "$NMF" | awk '$1 ~ /^wikipedia_en_news_.*\.zim$/ { print $1; exit }')
+    # The LAST match, not the first: the window is in the filename, so
+    # sorted by name the last line is the newest window. Taking the
+    # first meant a server that held two served the older one.
+    NZIM_NAME=$(echo "$NMF" | awk '$1 ~ /^wikipedia_en_news_.*\.zim$/ { n = $1 } END { print n }')
     # Archives already here, or chosen for this run: the zim is wanted in
     # both cases, and only the first was being counted -- so
     # `--corpus --archives --news` skipped the news pages even though the

@@ -163,6 +163,16 @@ if [ "$DO_NEWS" -eq 1 ]; then
             mv -f "$STAGE/news/$(basename "$NZ").tmp" "$STAGE/news/$(basename "$NZ")"
             ( cd "$STAGE/news" && sha256sum "$(basename "$NZ")" | awk '{print $1}' \
                 > "$(basename "$NZ").sha256" )
+            # One window on the server, not a growing archive of them:
+            # the filename changes with the window, so without this the
+            # directory keeps every day's zim and the MANIFEST lists
+            # them all.
+            ( cd "$STAGE/news" && for o in wikipedia_en_news_*.zim; do
+                  [ -f "$o" ] || continue
+                  [ "$o" = "$(basename "$NZ")" ] && continue
+                  rm -f "$o" "$o.sha256"
+                  say "removed" "$o (superseded window)"
+              done )
             say "zim" "$(basename "$NZ") $(du -h "$NZ" | cut -f1)"
         else
             say "zim" "none built yet"
