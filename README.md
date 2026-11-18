@@ -34,7 +34,7 @@ What it costs, as `setup.sh` reports it:
 | | download | on disk |
 |---|---|---|
 | **the corpus** — search, the MCP endpoint, the stored page text | 112 GiB | 276 GiB |
-| **the ZIM archives** — the original pages, images and tables, read offline | 530 GiB | 530 GiB |
+| **the ZIM archives** (optional download) — the original pages, images and tables, read offline | 530 GiB | 530 GiB |
 | **the news window** — a rolling three months, refreshed daily | 70 MiB | 82 MiB |
 | everything | 642 GiB | 806 GiB |
 
@@ -43,11 +43,10 @@ citations and the MCP tools all work without them, and what you give up is
 reading the original page rather than its text. The archives take the same
 space they download, since a ZIM is already compressed.
 
-The corpus unpacks as it streams, so the peak requirement is the database
-plus the couple of 5 GiB parts in flight — about **286 GiB**, not the
-388 GiB that downloading and then unpacking would need. `setup.sh` checks
-free space before it starts, and `--keep-parts` trades that back for a
-cheaper retry.
+The corpus unpacks as it streams, so it needs about **286 GiB** free at
+peak: the database plus the couple of 5 GiB parts in flight. `setup.sh`
+checks free space before it starts. `--keep-parts` keeps every part
+instead, which needs 388 GiB and makes a retry cheap.
 
 Re-running it is how you update: the program files are replaced and the
 corpus, the archives and your settings are left alone.
@@ -84,8 +83,8 @@ link to the original page, offline, with its pictures.
 
 **One table, one index.** 215 archives land in 51 per-collection tables
 and are then copied into a single `corpus` table with one fulltext index
-over `(Doc, Source)`. One index answers a query in milliseconds; 51 of
-them would mean 51 searches and a merge step per query.
+over `(Doc, Source)`. Every query is one search over everything, and
+ranking is comparable across collections because it comes from one index.
 
 **Keyword search, not vectors.** Measured, not assumed. Over 700,131
 documents, asked 80 questions whose right answer was known in advance:
@@ -93,10 +92,9 @@ keyword put it first 84% of the time, vectors alone 26%, and the two
 fused by Reciprocal Rank Fusion 49%. Fusion cost 28 of those 80 first
 places while leaving recall@10 flat (91% to 89%) -- so the models we
 tested gained nothing from the vector side and lost precision to it.
-Sweeping the index and pool settings did not move vector hit@1 off 26%,
-which makes that the ceiling of the representation rather than a tuning
-mistake. The corpus therefore ships with keyword ranking only: no model
-to load at query time and no embedding pass over 50M documents.
+Sweeping the index and pool settings did not move vector hit@1 off 26%.
+The corpus therefore ships with keyword ranking only: no model to load at
+query time and no embedding pass over 50M documents.
 
 **The text is stored, the pictures are not.** The corpus table holds the
 plain text of each page — 189 GB of it. Pictures, styling and layout
