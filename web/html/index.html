@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Local Index of Public Sources</title>
+<style>
+:root {
+  --bg: #fbfbf9; --fg: #1a1a18; --dim: #6b6b64; --line: #dededa;
+  --accent: #7a4a2a; --card: #fff; --chip: #f0efe9;
+  --qs1: #ffe9a8; --qs2: #bfe6ff; --qs3: #d9f2c4;
+  --qs4: #ffd6e0; --qs5: #e6dcff; --qs6: #ffe0c2;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #17171a; --fg: #e8e8e4; --dim: #9a9a92; --line: #2e2e33;
+    --accent: #d9a273; --card: #1e1e22; --chip: #28282e;
+    --qs1: #6b5a1e; --qs2: #1e4a6b; --qs3: #2a5230;
+    --qs4: #6b2a3c; --qs5: #3b2a6b; --qs6: #6b4423;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #17171a; --fg: #e8e8e4; --dim: #9a9a92; --line: #2e2e33;
+  --accent: #d9a273; --card: #1e1e22; --chip: #28282e;
+  --qs1: #6b5a1e; --qs2: #1e4a6b; --qs3: #2a5230;
+  --qs4: #6b2a3c; --qs5: #3b2a6b; --qs6: #6b4423;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+.wrap { max-width: 940px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { font-size: 20px; margin: 0 0 2px; letter-spacing: -0.01em; }
+.sub { color: var(--dim); font-size: 13px; margin-bottom: 20px; }
+form { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+input[type=text] {
+  flex: 1; min-width: 200px; padding: 10px 12px; font-size: 15px;
+  background: var(--card); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 7px;
+}
+.sub a.browse { color: inherit; text-decoration: underline;
+                text-underline-offset: 2px; }
+.sub a.browse:hover { color: #0b63c5; }
+select, input[type=number] {
+  padding: 10px 8px; font-size: 14px;
+  background: var(--card); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 7px;
+}
+input[type=number] { width: 70px; }
+button {
+  padding: 10px 18px; font-size: 15px; cursor: pointer;
+  background: var(--accent); color: #fff; border: 0; border-radius: 7px;
+}
+button:disabled { opacity: .55; cursor: default; }
+.stat { font-size: 12.5px; color: var(--dim); margin: 16px 0 10px; }
+.stat b { color: var(--fg); font-weight: 600; }
+.mix { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 18px; }
+.mix span {
+  font-size: 11px; font-family: ui-monospace, monospace;
+  background: var(--chip); border-radius: 4px; padding: 2px 7px;
+}
+.hit { background: var(--card); border: 1px solid var(--line);
+       border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+.hit h3 { margin: 0 0 5px; font-size: 15px; font-weight: 600; }
+.hit h3 a { color: var(--fg); text-decoration: none; }
+.hit h3 a:hover, .hit h3 a:focus { color: var(--accent); text-decoration: underline; }
+a.open { font-size: 11px; font-family: ui-monospace, monospace;
+         color: var(--accent); text-decoration: none; margin-right: 8px; }
+a.open:hover { text-decoration: underline; }
+.meta { font-size: 11.5px; color: var(--dim); margin-bottom: 7px; }
+.chip { display: inline-block; background: var(--chip); color: var(--fg);
+        border-radius: 4px; padding: 1px 6px; margin-right: 6px;
+        font-size: 11px; font-family: ui-monospace, monospace; }
+.hit p { margin: 0 0 6px; font-size: 13.5px; }
+/* Query-term mark-up from stringformat's %mC: one querysetN class per
+   distinct term, plus a shared .query. Themed here rather than using
+   the I sub-flag, which hardcodes #ffff66 and ignores dark mode.
+   color: inherit keeps the theme's foreground, so contrast holds on
+   both the light tints and the dark ones. */
+.query { border-radius: 3px; padding: 0 2px; font-weight: 600;
+         color: inherit; background: var(--qs1); }
+.queryset1 { background: var(--qs1); }
+.queryset2 { background: var(--qs2); }
+.queryset3 { background: var(--qs3); }
+.queryset4 { background: var(--qs4); }
+.queryset5 { background: var(--qs5); }
+.queryset6 { background: var(--qs6); }
+.queryset7 { background: var(--qs2); }
+.queryset8 { background: var(--qs3); }
+.path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px; color: var(--dim); word-break: break-all; }
+.empty { color: var(--dim); padding: 28px 0; }
+.pager { display: flex; align-items: center; gap: 14px; margin: 18px 0 4px; }
+.pager a { color: var(--accent); text-decoration: none; font-size: 14px;
+           border: 1px solid var(--line); border-radius: 7px;
+           padding: 7px 13px; background: var(--card); }
+.pager a:hover { border-color: var(--accent); }
+.pager .pg { color: var(--dim); font-size: 12.5px; }
+.pages { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.pages a.pg-num { border: 0; background: none; padding: 5px 8px;
+                  font-size: 13.5px; border-radius: 5px; }
+.pages a.pg-num:hover { background: var(--chip); }
+.pages .cur { padding: 5px 9px; font-size: 13.5px; font-weight: 600;
+              border-radius: 5px; background: var(--accent); color: #fff; }
+.pages .gap { color: var(--dim); padding: 0 2px; }
+.err { color: #b3261e; font-size: 13px; padding: 12px 0; }
+@media (prefers-color-scheme: dark) { .err { color: #f2b8b5; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Local Index of Public Sources</h1>
+  <div class="sub">&nbsp;</div>
+
+  <form id="f">
+    <input type="text" id="q" placeholder="water purification" autofocus
+           autocomplete="off" spellcheck="false">
+    <select id="source"><option value="">all collections</option></select>
+    <input type="number" id="n" value="20" min="1" max="100" title="results">
+    <button type="submit" id="go">Search</button>
+  </form>
+
+  <div id="out"><div class="empty">Enter a query.</div></div>
+</div>
+
+<script>
+var out = document.getElementById("out");
+var sel = document.getElementById("source");
+var sourcesLoaded = false;
+
+/* The collection <select> is filled from the server, so a source taken
+   from the URL cannot be assigned until the options exist. Hold it here
+   and apply it in fillSources(); search() reads it meanwhile. */
+var pendingSource = null;
+
+function readUrl() {
+  var p = new URLSearchParams(location.search);
+  var sk = parseInt(p.get("skip"), 10);
+  return { q: p.get("q") || "",
+           n: p.get("n") || "20",
+           source: p.get("source") || "",
+           skip: (sk > 0 ? sk : 0) };
+}
+
+/* One builder for both the address bar and the pager hrefs, so a pasted
+   link and a clicked Next always mean the same thing. */
+function urlFor(st) {
+  var p = new URLSearchParams();
+  if (st.q) p.set("q", st.q);
+  if (st.n && String(st.n) !== "20") p.set("n", st.n);
+  if (st.source) p.set("source", st.source);
+  if (st.skip) p.set("skip", st.skip);
+  var qs = p.toString();
+  return location.pathname + (qs ? "?" + qs : "");
+}
+
+/* Write the current search into the address bar so it can be bookmarked,
+   shared and reached with Back. Defaults are omitted to keep the URL
+   short: no q means the empty page, and n=20 is the default. */
+function writeUrl(st, push) {
+  var url = urlFor(st);
+  if (push) history.pushState(st, "", url);
+  else history.replaceState(st, "", url);
+  document.title = st.q ? st.q + " — alpacaLIPS" : "alpacaLIPS";
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+  });
+}
+function num(n) { return Number(n).toLocaleString(); }
+
+/* ONE url per document. /apps/doc decides what to show: it redirects to
+   the proxied archive page while kiwix answers, and renders the stored
+   text when it does not -- so the title link is "the document" and
+   &text=1 forces the indexed bytes, which is what makes a quotation
+   checkable character for character.
+   id is "<source>:<srcpath>" as one parameter value -- SrcPath contains
+   spaces, slashes and colons (gutenberg titles especially), so it must
+   be encoded whole and never assembled from pre-encoded pieces. */
+function docUrl(r) {
+  return "/apps/doc?id=" + encodeURIComponent(r.source + ":" + r.path);
+}
+
+function fillSources(list, newsItems) {
+  if (sourcesLoaded || !list) return;
+  list.forEach(function (s) {
+    var o = document.createElement("option");
+    o.value = s.name;
+    o.textContent = s.name + " (" + num(s.docs) + ")";
+    sel.appendChild(o);
+  });
+  /* News is a separate database, not one of the corpus collections, so
+     it sits below a rule rather than in the list. A disabled option is
+     the only separator every browser renders; <hr> inside <select> is
+     too new to rely on. */
+  if (newsItems) {
+    var sep = document.createElement("option");
+    sep.disabled = true;
+    sep.textContent = "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500";
+    sel.appendChild(sep);
+    var nw = document.createElement("option");
+    nw.value = "news";
+    nw.textContent = "News (" + num(newsItems) + " items)";
+    sel.appendChild(nw);
+  }
+  sourcesLoaded = true;
+  if (pendingSource) {
+    sel.value = pendingSource;      /* ignored if the name is unknown */
+    pendingSource = null;
+  }
+}
+
+/* The counts in the subtitle come from the server rather than being
+   written into the page: the literal that used to sit here said
+   48,033,082 documents and 171 archives, both of which went stale. */
+function fillCounts(j) {
+  if (!j || !j.corpus) return;
+  var el = document.querySelector(".sub");
+  if (!el) return;
+  /* The archive count becomes the link to kiwix's own library, but only
+     while kiwix is answering: a "browse" link to a dead port is worse
+     than no link, and whether it is up is a per-request fact, not a
+     property of the install. */
+  var arch = j.archives
+    ? " &middot; " + (j.kiwix
+        ? '<a class="browse" href="/zim/">' + num(j.archives) + " archives</a>"
+        : num(j.archives) + " archives")
+    : "";
+  el.innerHTML = num(j.corpus) + " documents" + arch +
+                 (j.newsItems ? " &middot; " + num(j.newsItems) + " news items" : "");
+}
+
+function render(j) {
+  fillSources(j.sources, j.newsItems);
+  fillCounts(j);
+  var h = "";
+
+  if (j.error) {
+    out.innerHTML = '<div class="err">' + esc(j.error) + "</div>";
+    return;
+  }
+
+  /* "Results 21-40 of about 1,184,560" -- the total is countInfo's
+     indexCount from the server, an estimate of all matching rows, not the
+     page size. -1 means texis could not estimate it. */
+  var sk = j.skip || 0, pg = j.results.length;
+  var from = pg ? sk + 1 : 0, to = sk + pg;
+  h += '<div class="stat">' +
+       (pg ? "Results <b>" + num(from) + "&ndash;" + num(to) + "</b>" +
+             (j.total > 0 ? " of about <b>" + num(j.total) + "</b>" : "")
+           : "<b>0</b> results") +
+       " for &ldquo;" + esc(j.query) + "&rdquo; in <b>" + j.ms + " ms</b>" +
+       (j.source ? ", restricted to <b>" + esc(j.source) + "</b>" : "") +
+       "</div>";
+
+  var keys = Object.keys(j.mix || {});
+  if (keys.length) {
+    h += '<div class="mix">';
+    keys.sort(function (a, b) { return j.mix[b] - j.mix[a]; }).forEach(function (k) {
+      h += "<span>" + esc(k) + " &times;" + j.mix[k] + "</span>";
+    });
+    h += "</div>";
+  }
+
+  if (!j.results.length) {
+    h += '<div class="empty">No matches.</div>';
+  } else {
+    j.results.forEach(function (r) {
+      if (r.kind === "news") {
+        /* An item is not a document: there is no stored text to open, so
+           it links to the outlets that reported it. */
+        h += '<div class="hit"><h3>' + r.pos + ". " + esc(r.title) + "</h3>" +
+             '<div class="meta"><span class="chip">news</span>' +
+             (r.site ? '<span class="chip">' + esc(r.site) + "</span>" : "") +
+             (r.rank ? '<span class="chip">rank ' + r.rank + "</span>" : "") +
+             "</div><p>" + r.snippet + "</p>" +
+             '<div class="path">';
+        /* Local documents first: these open from the corpus with no
+           internet. The outlets need a connection, so they are labelled
+           and come second. */
+        (r.docs || []).forEach(function (d) {
+          var du = "/apps/doc?id=" + encodeURIComponent(d.id);
+          h += '<a class="open" href="' + esc(du) + '">' + esc(d.title) +
+               (d.kind === "event page" ? " \u2605" : "") + "</a>";
+        });
+        if ((r.outlets || []).length) {
+          h += '<span class="path">web:</span>';
+          (r.outlets || []).forEach(function (o) {
+            h += '<a class="open" href="' + esc(o.url) + '" rel="noopener">' +
+                 esc(o.outlet) + "</a>";
+          });
+        }
+        h += "</div></div>";
+        return;
+      }
+      var u = docUrl(r);
+      h += '<div class="hit"><h3><a href="' + esc(u) + '">' +
+             r.pos + ". " + esc(r.title) + "</a></h3>" +
+           '<div class="meta"><span class="chip">' + esc(r.source) + "</span>" +
+           (r.site ? '<span class="chip">' + esc(r.site) + "</span>" : "") +
+           '<span class="chip">rank ' + r.rank + "</span></div>" +
+           /* NOT esc()'d: stringformat's H sub-flag already escaped the
+              document text server-side, and the <span> mark-up it added
+              must stay live. Escaping here would print literal tags. */
+           "<p>" + r.snippet + "</p>" +
+           '<div class="path">' +
+             '<a class="open" href="' + esc(u) + '&text=1">stored text</a>' +
+             '<a class="open" href="' + esc(u) + '&text=1&raw=1">raw</a>' +
+             esc(r.path) + "</div></div>";
+    });
+  }
+  h += pager(j);
+  out.innerHTML = h;
+}
+
+/* Prev/Next, hrefs built with the same urlFor() the address bar uses.
+   Next is offered while the estimate says there is more; the estimate can
+   be optimistic, in which case the next page simply reports 0 results. */
+function pager(j) {
+  var sk = j.skip || 0, step = Number(j.n) || 20;
+  var more = j.total > 0 ? (sk + j.results.length) < j.total
+                         : j.results.length === step;
+  if (!sk && !more) return "";
+  var st = { q: j.query, n: j.n, source: j.source };
+  var h = '<div class="pager">';
+  if (sk > 0) {
+    var prev = Math.max(0, sk - step);
+    st.skip = prev;
+    h += '<a data-skip="' + prev + '" href="' + esc(urlFor(st)) +
+         '">&larr; Previous</a>';
+  }
+  h += pageLinks(j, sk, step);
+  if (more) {
+    st.skip = sk + step;
+    h += '<a data-skip="' + (sk + step) + '" href="' + esc(urlFor(st)) +
+         '">Next &rarr;</a>';
+  }
+  return h + "</div>";
+}
+
+/* Numbered pages: first, a gap, a window around the current page, a gap,
+   and the last. The window runs cur-2 .. cur+6 -- wider ahead than
+   behind, since someone on page 11 is far more likely to go forward.
+   Measured first: deep pages are cheap here (skip=1,000,000 answers in
+   447ms, because likeprows caps the pool rather than driving cost), so
+   the last page is a real link and depth needs no cap.
+   The total is countInfo's ESTIMATE, so the last page may come back
+   empty -- that is the estimate being optimistic, not a broken link. */
+function pageLinks(j, sk, step) {
+  var cur = Math.floor(sk / step) + 1;
+  var last = j.total > 0 ? Math.max(1, Math.ceil(j.total / step)) : 0;
+  var from = Math.max(1, cur - 2);
+  var to = cur + 6;
+  if (last) to = Math.min(to, last);
+  else if (j.results.length < step) to = cur;   /* no estimate: stop here */
+
+  var st = { q: j.query, n: j.n, source: j.source };
+  function page(p) {
+    if (p === cur) return '<span class="cur">' + num(p) + "</span>";
+    st.skip = (p - 1) * step;
+    return '<a class="pg-num" data-skip="' + st.skip + '" href="' +
+           esc(urlFor(st)) + '">' + num(p) + "</a>";
+  }
+
+  var h = '<span class="pages">';
+  if (from > 1) {
+    h += page(1);
+    if (from > 2) h += '<span class="gap">&hellip;</span>';
+  }
+  for (var p = from; p <= to; p++) h += page(p);
+  if (last && to < last) {
+    if (to < last - 1) h += '<span class="gap">&hellip;</span>';
+    h += page(last);
+  }
+  return h + "</span>";
+}
+
+/* `push` adds a history entry: true for a search the user asked for, so
+   Back returns to the previous one; false when restoring from the URL,
+   which must not create a duplicate entry. */
+var curSkip = 0;
+
+function search(push) {
+  var q = document.getElementById("q").value.trim();
+  if (!q) return;
+  var n = document.getElementById("n").value;
+  var s = sourcesLoaded ? sel.value : (pendingSource || "");
+  var go = document.getElementById("go");
+  writeUrl({ q: q, n: n, source: s, skip: curSkip }, !!push);
+  go.disabled = true;
+  out.innerHTML = '<div class="empty">Searching&hellip;</div>';
+  fetch("/apps/search.json?q=" + encodeURIComponent(q) +
+        "&n=" + encodeURIComponent(n) +
+        (curSkip ? "&skip=" + curSkip : "") +
+        (s ? "&source=" + encodeURIComponent(s) : ""))
+    .then(function (r) { return r.json(); })
+    .then(render)
+    .catch(function (err) {
+      out.innerHTML = '<div class="err">Request failed: ' + esc(err) + "</div>";
+    })
+    .then(function () { go.disabled = false; });
+}
+
+/* Put the URL into the form, then run it. Used on first load and on
+   Back/Forward, neither of which may push a new entry. */
+function applyUrl() {
+  var st = readUrl();
+  document.getElementById("q").value = st.q;
+  document.getElementById("n").value = st.n;
+  curSkip = st.skip;
+  if (sourcesLoaded) sel.value = st.source; else pendingSource = st.source;
+  if (st.q) {
+    search(false);
+  } else {
+    out.innerHTML = '<div class="empty">Enter a query.</div>';
+    /* no query: still need the collection list and the counts */
+    fetch("/apps/search.json?q=").then(function (r) { return r.json(); })
+      .then(function (j) { fillSources(j.sources, j.newsItems); fillCounts(j); })
+      .catch(function () {});
+  }
+}
+
+document.getElementById("f").addEventListener("submit", function (e) {
+  /* A new query starts at page 1: keeping the old offset would land the
+     user in the middle of a different result set. */
+  e.preventDefault(); curSkip = 0; search(true);
+});
+sel.addEventListener("change", function () {
+  curSkip = 0;
+  if (document.getElementById("q").value.trim()) search(true);
+});
+window.addEventListener("popstate", function () { applyUrl(); });
+
+/* Pager links are real <a href> so middle-click and copy-link work, with
+   the click intercepted to keep it a single-page fetch. */
+out.addEventListener("click", function (e) {
+  var a = e.target.closest ? e.target.closest("a[data-skip]") : null;
+  if (!a) return;
+  e.preventDefault();
+  curSkip = parseInt(a.getAttribute("data-skip"), 10) || 0;
+  search(true);
+  window.scrollTo(0, 0);
+});
+
+applyUrl();
+</script>
+</body>
+</html>
