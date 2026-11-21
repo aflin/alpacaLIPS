@@ -33,8 +33,15 @@ while [ $# -gt 0 ]; do
         *) echo "unknown option $1" >&2; exit 2 ;;
     esac
 done
+# DOWNLOAD_DIR is what build.sh writes and what --download-dir sets.
+# PUBLISH was an earlier name for the same directory and is still read,
+# so a config.local.sh written before the rename keeps working.
 if [ -z "$PUBLISH" ] && [ -r config.local.sh ]; then
-    PUBLISH=$(sed -n 's/^PUBLISH=//p' config.local.sh | tr -d '"' | head -1)
+    for n in DOWNLOAD_DIR PUBLISH; do
+        PUBLISH=$(sed -n "s/^$n=//p" config.local.sh |
+                  sed 's/^\${[A-Z_]*:-//; s/}$//' | tr -d '"' | head -1)
+        [ -n "$PUBLISH" ] && break
+    done
 fi
 PUBLISH=${PUBLISH:-$HERE/downloads/alpacalips}
 

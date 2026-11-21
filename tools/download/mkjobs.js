@@ -24,6 +24,29 @@ var curl = require("rampart-curl");
 var LIPS  = rampart.utils.realPath(process.scriptPath + "/../..");
 var ROOT = require("../paths.js").dataDir(LIPS);
 var META = process.env.META || (ROOT + "/meta");
+
+/* The measured order, written by rank-mirrors.sh: fastest host first,
+   one per line. Absent on a machine that has not measured, and then the
+   rotation below behaves as it always did. */
+var MRANK = {};
+(function () {
+    var f = META + "/mirror-rank.txt";
+    if (!stat(f)) return;
+    bufferToString(readFile(f)).split("\n").forEach(function (h, i) {
+        h = h.replace(/^\s+|\s+$/g, "");
+        if (h.length) MRANK[h] = i;
+    });
+})();
+function urlHost(u) {
+    var m = /^https?:\/\/([^\/]+)/.exec(String(u));
+    return m ? m[1] : "";
+}
+/* Unmeasured hosts sort after measured ones rather than first: an
+   unknown mirror is a worse bet than one known to be quick. */
+function mrankOf(u) {
+    var h = urlHost(u);
+    return (h in MRANK) ? MRANK[h] : 999;
+}
 var UA   = "rampart-keep/0.7 (offline corpus build; contact: admin@rampart.dev)";
 
 function arg(n) { return process.argv.indexOf("--" + n) >= 0; }
@@ -69,8 +92,16 @@ if (doKiwix) {
         var urls = [], re = /<url[^>]*priority="\d+"[^>]*>([^<]+)<\/url>/g, m;
         while ((m = re.exec(body)) !== null) urls.push(m[1]);
         if (!fn || !urls.length) { bad++; return; }
-        var off = idx % urls.length;
-        var ordered = urls.slice(off).concat(urls.slice(0, off));
+        /* Measured order first, then rotate within the fastest few so
+           the load still spreads without any job starting on the slow
+           one. The remainder follow in measured order as fallbacks. */
+        var ranked = urls.slice().sort(function (a, b) {
+            return mrankOf(a) - mrankOf(b);
+        });
+        var k = ranked.length < 3 ? ranked.length : 3;
+        var head = ranked.slice(0, k), off = k ? idx % k : 0;
+        var ordered = head.slice(off).concat(head.slice(0, off))
+                          .concat(ranked.slice(k));
         jobs.push([ ROOT + "/kiwix/" + fn[1], sh ? sh[1] : "-",
                     sz ? sz[1] : "0" ].concat(ordered.slice(0, 4)).join("\t"));
         ok++;

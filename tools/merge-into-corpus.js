@@ -43,8 +43,20 @@ function flag(n) { return process.argv.indexOf("--" + n) > 0; }
 var LIPS  = process.env.LIPS || rampart.utils.realPath(process.scriptPath + "/..");
 var DB   = String(arg("db", LIPS + "/build/corpus"));
 var GO   = flag("go");
+/* Per-row locking costs about 0.057 ms a row here, which over 51 million
+   rows is the better part of an hour. The merge owns the corpus while it
+   runs -- it has just dropped it -- so there is nothing for the locks to
+   protect against. --locking restores it for a run where something else
+   has the database open. */
+var LOCKING = flag("locking");
+var REBUILD = flag("rebuild");
 var ONE  = arg("table", null);
 var sql  = new Sql.init(DB, true);
+if (!LOCKING) {
+    /* 0.7.6: noLocking applies to this connection only, so this does
+       not reach anything else that has the database open. */
+    sql.set({ noLocking: true });
+}
 
 /* The 39 LCC slices become ONE Source, 'gutenberg', with the slice on
    Site -- the same shape stackexchange uses for 161 archives. Mapping a
@@ -123,6 +135,82 @@ if (!stored) {
 printf("merge cutoff: %s (%d)%s\n", ASOF_S, ASOF,
        stored ? "  [stored]" : "  [new]");
 printf("archives imported after that instant are treated as new.\n");
+
+/* IS THE CORPUS STILL MADE OF THESE TABLES? Two ways it stops being:
+   a table it was built from is gone, or one has been re-imported since.
+   Appending to a corpus in that state duplicates whatever changed, so
+   this is checked before anything is planned. */
+var staleGone = [], staleNew = [];
+
+/* Merged is stored UTC without a zone and Imported with one, so they
+   are only comparable once both say which zone they are in. */
+function instant(v) {
+    var t = String(v || "");
+    if (!t.length) return NaN;
+    if (!/[Zz]$|[+-]\d\d:?\d\d$/.test(t)) t += "Z";
+    return new Date(t).getTime();
+}
+
+var mergedAt = {};
+sql.exec("select TableName, Merged from corpus_merged;", { maxRows: 5000 },
+         function (r) { mergedAt[String(r.TableName)] = instant(r.Merged); });
+Object.keys(mergedAt).forEach(function (t) {
+    if (!tableExists(t)) staleGone.push(t);
+});
+sql.exec("select TableName, Zim, Imported from lips_sources;",
+         { maxRows: 5000 }, function (r) {
+    var t = String(r.TableName);
+    if (!(t in mergedAt)) return;          /* never merged: just pending */
+    var when = mergedAt[t], imp = instant(r.Imported);
+    if (isNaN(when) || isNaN(imp)) return; /* unreadable: not evidence */
+    if (imp > when) staleNew.push(t + " (" + String(r.Zim) + ")");
+});
+var STALE = staleGone.length + staleNew.length;
+if (STALE) {
+    printf("\nCORPUS IS BEHIND ITS TABLES\n");
+    staleGone.forEach(function (t) {
+        printf("  gone        %s -- merged, and the table no longer exists\n", t);
+    });
+    staleNew.slice(0, 8).forEach(function (t) {
+        printf("  re-imported %s\n", t);
+    });
+    if (staleNew.length > 8)
+        printf("  re-imported ... and %d more\n", staleNew.length - 8);
+    printf("\n%d table(s) affected. corpus holds rows these no longer"
+           + " account for.\n", staleGone.length + staleNew.length);
+    if (!REBUILD) {
+        printf("\nRefusing to append to it: that would duplicate whatever"
+               + " changed.\n  --rebuild drops corpus, forgets the registry"
+               + " and merges every table\n  again in order (the insertion"
+               + " order is what decides tie ranking).\n");
+        process.exit(2);
+    }
+}
+
+if (REBUILD) {
+    if (!GO) {
+        printf("\n--rebuild given without --go: nothing dropped.\n");
+        process.exit(0);
+    }
+    printf("\nrebuilding from the tables:\n");
+    if (tableExists("corpus")) {
+        /* The indexes go with it: they describe rows that are about to
+           stop existing, and the index stage rebuilds them from the new
+           corpus. */
+        ["corpus_cx", "corpus_src", "corpus_ttl"].forEach(function (ix) {
+            try { sql.exec("drop index " + ix + ";");
+                  printf("  dropped index %s\n", ix); } catch (e) {}
+        });
+        sql.exec("drop table corpus;");
+        printf("  dropped table corpus\n");
+    }
+    ["corpus_merged", "corpus_merge_meta"].forEach(function (t) {
+        if (tableExists(t)) { sql.exec("drop table " + t + ";");
+                              printf("  dropped %s\n", t); }
+    });
+    printf("  re-run this tool to merge every table from nothing\n");
+    process.exit(0);
+}
 
 /* Per table, split its archives either side of the cutoff. */
 var tbls = {};

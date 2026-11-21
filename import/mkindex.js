@@ -31,6 +31,23 @@ if (!DB) {
 }
 var sql = new Sql.init(String(DB), true);
 
+/* Hold one read lock for each whole index build instead of taking them
+   intermittently per row. These builds run inside an import, with
+   nothing else writing to the table, so the per-row locks protect
+   nothing. It changes only the fulltext builds: a btree is always built
+   under a continuous read lock regardless.
+
+   An unknown name is meant to raise and sql.get() to report what is
+   set; an older rampart does neither, so a blank read-back here means
+   this rampart cannot confirm it, not that it is off. */
+sql.set({ optimize: "indexbatchbuild" });
+(function () {
+    var ob = "";
+    try { ob = String(sql.get("optimize") || ""); } catch (e) { ob = ""; }
+    printf("  %-9s indexbatchbuild on (read-back: %s)\n", "locking",
+           ob.length ? ob : "not reported by this build");
+})();
+
 var names = [];
 if (ONE) names = [String(ONE)];
 else {

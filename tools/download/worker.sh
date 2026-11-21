@@ -82,6 +82,40 @@ fi
 # 114 GB transfer survives a dead network. Staging keeps both, and is
 # what get-gutenberg.sh does.
 PART=$DEST.part
+
+# A big archive first: eight connections spread over this job's mirrors,
+# because one stream to any of them is shaped to a few MB/s. Only over
+# 1 GiB -- below that, four jobs in parallel already fill the link and
+# the chunk machinery would add nothing but ways to fail. On any failure
+# this falls through to the wget loop, which resumes from the same .part.
+SPREAD_MIN=${SPREAD_MIN:-1073741824}
+if [ "$WANT" != "0" ] && [ "$WANT" -ge "$SPREAD_MIN" ] 2>/dev/null \
+   && [ -r "$(dirname "$0")/spread.sh" ]; then
+    . "$(dirname "$0")/spread.sh"
+    SURLS=""
+    for U in "${URLS[@]}"; do
+        case "$U" in https://*|http://*) SURLS="$SURLS $U" ;; esac
+    done
+    if [ -n "$SURLS" ]; then
+        say "SPREAD $BASE  $(( WANT / 1073741824 )) GiB over $SPREAD_CONN connections"
+        if fetch_spread "$DEST" "$WANT" $SURLS; then
+            HAVE=$(stat -c %s "$PART" 2>/dev/null || echo 0)
+            GOT=""
+            if [ "$SHA" != "-" ]; then GOT=$(sha256sum "$PART" | cut -d" " -f1); fi
+            if [ "$HAVE" = "$WANT" ] && { [ "$SHA" = "-" ] || [ "$GOT" = "$SHA" ]; }; then
+                mv -f "$PART" "$DEST" || { say "MVFAIL $BASE"; exit 1; }
+                [ "$SHA" != "-" ] && sha_write "$DEST" "$GOT"
+                say "OK    $BASE  $HAVE bytes (spread)"
+                exit 0
+            fi
+            # Wrong bytes are not resumable: start the mirrors over.
+            say "BADSPREAD $BASE  $HAVE/$WANT"; rm -f "$PART"
+        else
+            say "SPREADFAIL $BASE  falling back to one stream"
+        fi
+    fi
+fi
+
 for U in "${URLS[@]}"; do
     [ -z "$U" ] && continue
     case "$U" in https://*|http://*) ;; *) continue ;; esac

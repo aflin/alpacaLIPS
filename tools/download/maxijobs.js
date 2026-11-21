@@ -19,7 +19,7 @@ var want = [
   ["wikipedia",   "wikipedia_en_medicine_maxi_2026-10.zim"],
   ["wikisource",  "wikisource_en_all_maxi_2026-09.zim"],
   ["wikibooks",   "wikibooks_en_all_maxi_2026-10.zim"],
-  ["wikiversity", "wikiversity_en_all_maxi_2026-05.zim"],
+  ["wikiversity", "wikiversity_en_all_maxi_2026-11.zim"],
   ["wikivoyage",  "wikivoyage_en_all_maxi_2026-09.zim"],
   ["wikiquote",   "wikiquote_en_all_maxi_2026-10.zim"]
 ];

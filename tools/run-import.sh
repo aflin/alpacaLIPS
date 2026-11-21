@@ -13,7 +13,11 @@
 # For each archive: stage to JSONL if not already staged, then import.
 # Both steps are skippable, so the script is resumable: the importer
 # consults lips_sources and skips an archive already in, and staging is
-# skipped when the .jsonl and its sidecar exist.
+# skipped when the .jsonl and its sidecar exist AND the sidecar says it
+# came from this archive. That last condition is not pedantry: without
+# it, a newer dump of an already-staged collection imports the older
+# extraction, which is how a 2026-05 Wikiversity reached a corpus built
+# from the 2026-11 file.
 #
 # Staging files are KEPT (DESIGN.md §19): re-ingesting for vectors, or
 # re-running after a selector change, then costs no re-extraction. The
@@ -82,6 +86,16 @@ for name in "$@"; do
 
     staged_here=0
     if [ -s "$out" ] && [ -s "$out.meta.json" ]; then
+        # Which archive this extraction came from. The sidecar has
+        # recorded it all along; only the skip was not reading it.
+        staged_zim=$(sed -n 's/.*"zim"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+                         "$out.meta.json" | head -1)
+        if [ -n "$staged_zim" ] && [ "$staged_zim" != "$zim" ]; then
+            echo "[$i/$total] RESTAGE $short: staged from $staged_zim, importing $zim" >&2
+            rm -f "$out" "$out.meta.json"
+        fi
+    fi
+    if [ -s "$out" ] && [ -f "$out.meta.json" ]; then
         echo "    staged already ($(du -h "$out" | cut -f1))"
     else
         if ! python3r -I "$LIPS/extract/zim2jsonl.py" "$src" "$out"; then

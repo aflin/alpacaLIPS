@@ -10,7 +10,7 @@
  * An exported DATA wins over both, exactly as it does in the shell, so
  * ./build.sh --data reaches these tools too.
  *
- * Without this a standalone `rampart tools/zim-link.js` on a machine
+ * Without this a standalone `rampart tools/zim-verify.js` on a machine
  * whose archives live elsewhere looked inside the clone and reported
  * every archive missing.
  */

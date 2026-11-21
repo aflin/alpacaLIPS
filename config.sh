@@ -23,6 +23,12 @@ LIPS=${LIPS:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}
 
 DATA=${DATA:-$LIPS/downloads}    # everything fetched, and the payloads built from it
 META=${META:-$DATA/meta}        # job lists, metalink cache, progress logs
-KIWIX=${KIWIX:-$DATA/kiwix}     # the archive pool: every ZIM downloaded
+# THE ARCHIVES' ONE LOCATION. They are published for download, so they
+# live in the web server's download directory and nowhere else: fetch
+# writes them there, meta and import read them there, and the kiwix
+# library is built from there. No pool, no second name, no copies.
+# Falls back inside DATA when no download directory is configured, which
+# is the case on a fresh tree before --download-dir is given.
+KIWIX=${KIWIX:-${DOWNLOAD_DIR:-$DATA}/archives}
 STAGE=${STAGE:-$DATA/staging}   # extracted JSONL, kept (DESIGN.md §19)
 DB=${DB:-$LIPS/build/corpus}       # the tables and their indexes

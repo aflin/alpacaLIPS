@@ -21,7 +21,11 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"
+# Local to this machine: library.xml, the kiwix-tools binaries, the pid
+# file. NOT the archives -- those live where they are served from.
 ZIMDIR="$ROOT/zim"
+# The archives themselves, which is the download directory.
+ZIMSRC="${KIWIX:-$ZIMDIR}"
 LIB="$ZIMDIR/library.xml"
 PIDF="$ZIMDIR/kiwix-serve.pid"
 LOG="$ROOT/web/logs/kiwix-serve.log"
@@ -51,15 +55,15 @@ find_manage() {
 # visible failure.
 build_library() {
     local n MANAGE z
-    n=$(ls -1 "$ZIMDIR"/*.zim 2>/dev/null | wc -l | tr -d " ")
-    [ "$n" -gt 0 ] || { echo "no archives in $ZIMDIR -- run ./build.sh links"; return 1; }
+    n=$(ls -1 "$ZIMSRC"/*.zim 2>/dev/null | wc -l | tr -d " ")
+    [ "$n" -gt 0 ] || { echo "no archives in $ZIMSRC -- run ./build.sh fetch"; return 1; }
     MANAGE=$(find_manage) || { echo "kiwix-manage not found; cannot build $LIB"; return 1; }
     rm -f "$LIB"
     echo "building library from $n archives (reads metadata from each)"
-    if ! "$MANAGE" "$LIB" add "$ZIMDIR"/*.zim; then
+    if ! "$MANAGE" "$LIB" add "$ZIMSRC"/*.zim; then
         echo "kiwix-manage reported errors; retrying one at a time to" \
              "identify them"
-        for z in "$ZIMDIR"/*.zim; do
+        for z in "$ZIMSRC"/*.zim; do
             "$MANAGE" "$LIB" add "$z" || echo "  FAILED: $(basename "$z")"
         done
     fi
@@ -80,8 +84,8 @@ start)
         echo "A kiwix-serve already on PATH is used instead, if you have one."
         exit 1
     }
-    n=$(ls -1 "$ZIMDIR"/*.zim 2>/dev/null | wc -l | tr -d " ")
-    [ "$n" -gt 0 ] || { echo "no archives in $ZIMDIR -- run tools/zim-link.js"; exit 1; }
+    n=$(ls -1 "$ZIMSRC"/*.zim 2>/dev/null | wc -l | tr -d " ")
+    [ "$n" -gt 0 ] || { echo "no archives in $ZIMSRC -- run ./build.sh fetch"; exit 1; }
 
     if [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; then
         echo "already running, pid $(cat "$PIDF") on port $PORT"; exit 0
@@ -113,7 +117,7 @@ stop)
     ;;
 
 status)
-    n=$(ls -1 "$ZIMDIR"/*.zim 2>/dev/null | wc -l | tr -d " ")
+    n=$(ls -1 "$ZIMSRC"/*.zim 2>/dev/null | wc -l | tr -d " ")
     echo "archives linked : $n"
     echo "library         : $([ -s "$LIB" ] && echo "$LIB" || echo '(not built)')"
     echo "binary          : $(find_bin 2>/dev/null || echo '(not installed)')"
@@ -145,7 +149,7 @@ refresh)
     new="$LIB.new.$$"
     cp "$LIB" "$new" || exit 1
     added=0; skipped=0
-    for z in "$ZIMDIR"/*.zim; do
+    for z in "$ZIMSRC"/*.zim; do
         [ -e "$z" ] || continue
         b=$(basename "$z")
         # The library records each book's path, so its basename appearing
@@ -173,7 +177,7 @@ refresh)
 verify)
     # Does every archive answer at the content path tools.js constructs?
     n=0; ok=0; bad=""
-    for z in "$ZIMDIR"/*.zim; do
+    for z in "$ZIMSRC"/*.zim; do
         b=$(basename "$z" .zim)
         n=$((n+1))
         code=$(curl -s -o /dev/null -m 30 -w "%{http_code}" \

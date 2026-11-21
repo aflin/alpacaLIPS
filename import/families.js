@@ -182,8 +182,15 @@ function classifyPdf(zimName, scraper) {
             (/^zimgit-/.test(n) ? "nautiluszim" : null);
     if (!f || !PDF_FAMILIES[f]) return null;
     var m = /^zimgit-([a-z0-9-]+?)_[a-z]{2,3}(_|$)/.exec(n);
+    /* Per collection rather than one zimgit table, for the same reason as
+       stackexchange: five archives sharing a table cannot be replaced one
+       at a time. PDF_FAMILIES[f].table remains the fallback when the name
+       carries no collection to key on. */
     return { family: f, collection: PDF_FAMILIES[f].collection,
-             table: PDF_FAMILIES[f].table,
+             table: (m && m[1])
+                    ? PDF_FAMILIES[f].table + "_" +
+                      String(m[1]).replace(/[^A-Za-z0-9]+/g, "_")
+                    : PDF_FAMILIES[f].table,
              site: m ? m[1] : n.replace(/[^a-z0-9-]/g, "") };
 }
 
@@ -227,9 +234,16 @@ function classify(zimName, scraper) {
                  table: "stackoverflow", site: null };
 
     var se = /^(.+?)\.stackexchange\.com_|^(askubuntu|superuser|serverfault)\.com_/.exec(n);
-    if (se)
+    if (se) {
+        /* A table per site, like gutenberg's per-slice tables: a re-dumped
+           site is then replaced by dropping one table rather than by
+           deleting rows out of a shared one. Collection, and so Source,
+           is unchanged. */
+        var st = String(se[1] || se[2]);
         return { family: fam, collection: "stackexchange",
-                 table: "stackexchange", site: (se[1] || se[2]) };
+                 table: "stackexchange_" + st.replace(/[^A-Za-z0-9]+/g, "_"),
+                 site: st };
+    }
 
     if (/^ifixit_/.test(n))
         return { family: fam, collection: "ifixit", table: "ifixit",

@@ -1,6 +1,8 @@
+<img src="alpacalips.png" alt="alpacaLIPS" width="200">
+
 # alpacaLIPS — a Local Index of Public Sources
 
-An offline library: 49,947,943 documents drawn from 215 public archives,
+An offline library: 51,339,851 documents drawn from 215 public archives,
 plus a rolling window of current news, searched by keyword with no
 network at query time. It answers two kinds of caller from one index:
 
@@ -9,8 +11,8 @@ network at query time. It answers two kinds of caller from one index:
   link to the original page in its own archive.
 
 It is built with [rampart](https://rampart.dev) and its SQL engine, and
-it is sized to run on one machine: the published corpus is 275 GB
-installed, and everything in it is public material you can re-download.
+it is sized to run on one machine: the published corpus is 276 GiB
+installed, and everything in it is publicly available material.
 
 This repository is the **build** side: the scripts that fetch the
 archives, extract them, load them into tables, merge those into one
@@ -25,33 +27,36 @@ curl -fsSL https://rampart.dev/install-alpacalips.sh | sh
 
 That fetches an 80 KB tarball into `./alpacalips`, checks it against its
 published checksum, asks what to install, and downloads it. It needs
-`curl`, `tar` and `zstd`; it installs rampart itself if the machine has
-none. Pass options through the pipe with `sh -s --`, for instance
+[rampart 0.7.5](https://rampart.dev/download.html) and installs it in the 
+same directory if rampart is not already installed. 
+
+You may pass options through the pipe with `sh -s --`, for instance 
 `sh -s -- --dir /opt/alpacalips --corpus`, and `--help` lists them.
 
 What it costs, as `setup.sh` reports it:
 
 | | download | on disk |
 |---|---|---|
-| **the corpus** — search, the MCP endpoint, the stored page text | 112 GiB | 276 GiB |
+| **the corpus** — search, the MCP endpoint, the stored page text | 115 GiB | 276 GiB |
 | **the ZIM archives** (optional download) — the original pages, images and tables, read offline | 530 GiB | 530 GiB |
 | **the news window** — a rolling three months, refreshed daily | 70 MiB | 82 MiB |
-| everything | 642 GiB | 806 GiB |
+| everything | 645 GiB | 806 GiB |
 
 The corpus is the base install and the archives are optional: search,
 citations and the MCP tools all work without them, and what you give up is
-reading the original page rather than its text. The archives take the same
-space they download, since a ZIM is already compressed.
+reading the original, formatted page with links and images rather than just
+its text.  The archives take the same space they download, since a ZIM is
+already compressed.
 
 The corpus unpacks as it streams, so it needs about **286 GiB** free at
 peak: the database plus the couple of 5 GiB parts in flight. `setup.sh`
 checks free space before it starts. `--keep-parts` keeps every part
-instead, which needs 388 GiB and makes a retry cheap.
+instead, which needs 391 GiB and makes a retry cheap.
 
 Re-running it is how you update: the program files are replaced and the
 corpus, the archives and your settings are left alone.
 
-Building the corpus yourself instead costs roughly a week of machine time
+Building the corpus yourself instead costs up to a week of machine time
 and 2.5 TB of working space.
 
 ---
@@ -111,13 +116,17 @@ alternatives and why, and the open questions.
 
 ## Requirements
 
-* **rampart 0.7.5 or newer** — `curl -fsSL https://get.rampart.dev/ | sh`.
-  The build needs one already installed; `./build.sh check` reports what
-  it finds. **The runtime installs its own if it has to**: when
-  `setup.sh` finds no rampart of 0.7.5 or newer on `PATH` or in the
-  usual prefixes, it offers to install one into `rampart/` *inside the
-  unpacked directory* — `--prefix`, no root, nothing touched outside the
-  tree — and records which interpreter it settled on in
+* **rampart 0.7.6 or newer to build**, 0.7.5 to run —
+  `curl -fsSL https://get.rampart.dev/ | sh`.  The build needs 0.7.6:
+  the merge and the index use settings older versions have not got.
+  Serving a corpus someone else built needs only 0.7.5, and a 0.7.6
+  build writes the same index files either way.
+  Unlike the runtime, the build needs one already installed; 
+  `./build.sh check` reports what it finds.  **The runtime installs its own
+  if it has to**: when `setup.sh` finds no rampart of 0.7.5 or newer on
+  `PATH` or in the usual prefixes, it offers to install one into `rampart/`
+  *inside the unpacked directory* — `--prefix`, no root, nothing touched
+  outside the tree — and records which interpreter it settled on in
   `alpacalips.conf`, so `servers.sh` and later runs use the same one.
 * **rampart's python** (`python3r`) with `libzim` — `pip3r install libzim`
 * **curl**

@@ -9,7 +9,10 @@
 #   tools/make-payloads.sh --archives        the .zim files (hard linked)
 #   tools/make-payloads.sh --all
 #
-#   --gzip            use gzip instead of zstd (universal, much slower)
+#   --zstd            use zstd instead of gzip: smaller and much faster to
+#                     pack and unpack, but absent from a stock macOS and
+#                     a minimal Linux, and no tar can substitute for it
+#   --gzip            the default, named for symmetry
 #   --part SIZE       split size, default 5G
 #   --stage DIR       default downloads/alpacalips, inside the tree
 #   --db DIR          the database to package, default $LIPS/build/corpus.
@@ -28,12 +31,17 @@
 #                     and MANIFEST already carries each file's size, which
 #                     is enough for setup.sh to catch a truncated copy.
 #
-# WHY ZSTD BY DEFAULT, given .tar.gz was asked for: pigz is not installed
-# here, so gzip is single-threaded. On the measured ratios (table 3.91x,
-# btrees 5.24x, corpus_cx.dat only 1.25x) the corpus is ~100 GB out of
-# 276 GB either way, but gzip would spend hours on it where zstd spends
-# minutes. setup.sh unpacks .tar.zst and .tar.gz alike, so --gzip costs
-# nothing but time if you want it.
+# WHY GZIP BY DEFAULT: the payload has to be readable on a machine with
+# nothing installed. Measured on both platforms this targets, GNU tar and
+# Apple's bsdtar both run the zstd binary rather than decoding zstd
+# themselves, so a stock macOS or minimal Linux cannot open a .tar.zst at
+# all -- while /usr/bin/gzip and a zlib-linked bsdtar are always there.
+# The price, measured on 2 GiB of corpus.tbl: ratio 3.39x against 3.81x,
+# and decode at 75 MiB/s of input against 304 MiB/s, so an install is
+# ~27 min rather than ~18 on fast hardware and ~75 rather than ~33 on an
+# old x86. Packing is single-threaded here (no pigz), so a full corpus
+# republish is ~1.8 h against ~25 min. --zstd restores the old behaviour
+# for a mirror that knows its audience has it.
 #
 # SPLIT, not one file: a 100 GB object is awkward to host and awkward to
 # resume. Parts are listed in MANIFEST in order and streamed back through
@@ -54,9 +62,14 @@
 set -u
 LIPS=${LIPS:-$(cd "$(dirname "$0")/.." && pwd)}
 DB=$LIPS/build/corpus
-ZIMDIR=$LIPS/zim
+# The archives, where they live and are served from. Not a zim/ farm of
+# links into a pool: there is no pool and there are no links.
+ZIMDIR=${KIWIX:-$LIPS/zim}
 PART=5G
-COMP=zstd
+# gzip, because a stock macOS and a minimal Linux can both unpack it with
+# nothing installed, and neither can unpack zstd: both tars shell out to
+# the zstd binary. --zstd is there for a mirror whose audience has it.
+COMP=gzip
 DO_CORPUS=0 DO_KIWIX=0 DO_ARCHIVES=0 DO_RUNTIME=0 DO_NEWS=0 DRY=0 SHA=0 COPY=0
 NEWSDB=$LIPS/build/news
 NEWSZIM=$LIPS/build/news-src/out
@@ -75,6 +88,7 @@ while [ $# -gt 0 ]; do
         --all)      DO_CORPUS=1; DO_KIWIX=1; DO_ARCHIVES=1; DO_RUNTIME=1;
                     DO_NEWS=1; shift ;;
         --gzip)     COMP=gzip; shift ;;
+        --zstd)     COMP=zstd; shift ;;
         --part)     PART="$2"; shift 2 ;;
         --stage)    STAGE="$2"; shift 2 ;;
         --db)       DB="$2"; shift 2 ;;
@@ -151,10 +165,19 @@ if [ "$DO_NEWS" -eq 1 ]; then
     elif [ "$DRY" -eq 1 ]; then
         say "would pack" "$(du -sh "$NEWSDB" | cut -f1) from $NEWSDB"
     else
-        NT=$STAGE/news/news.tar.zst
+        NT=$STAGE/news/news.$EXT
         ( cd "$(dirname "$NEWSDB")" && tar -cf - "$(basename "$NEWSDB")" ) \
           | $CFILT > "$NT.tmp" && mv -f "$NT.tmp" "$NT"
-        ( cd "$STAGE/news" && sha256sum news.tar.zst | awk '{print $1}' > news.tar.zst.sha256 )
+        ( cd "$STAGE/news" && sha256sum "news.$EXT" | awk '{print $1}' > "news.$EXT.sha256" )
+        # A different compressor means a different name, so drop the
+        # payload the last format left: the MANIFEST would not list it and
+        # nothing would ever delete it.
+        ( cd "$STAGE/news" && for o in news.tar.*; do
+              case "$o" in *.sha256) continue ;; esac
+              [ "$o" = "news.$EXT" ] && continue
+              rm -f "$o" "$o.sha256"
+              say "removed" "$o (previous format)"
+          done )
         say "table" "$(du -h "$NT" | cut -f1)"
         # The newest built zim, by name: the window is in the filename.
         NZ=$(ls -1 "$NEWSZIM"/wikipedia_en_news_*.zim 2>/dev/null | sort | tail -1)
@@ -179,7 +202,8 @@ if [ "$DO_NEWS" -eq 1 ]; then
         fi
         # Same "<name> <bytes>" MANIFEST as everything else, written
         # whole so a half-written one cannot be read.
-        ( cd "$STAGE/news" && for f in news.tar.zst wikipedia_en_news_*.zim; do
+        ( cd "$STAGE/news" && for f in news.tar.* wikipedia_en_news_*.zim; do
+              case "$f" in *.sha256) continue ;; esac
               [ -f "$f" ] || continue
               printf '%s %s\n' "$f" "$(stat -c %s "$f")"
           done > MANIFEST.tmp && mv MANIFEST.tmp MANIFEST )
@@ -229,6 +253,23 @@ if [ "$DO_CORPUS" -eq 1 ]; then
               sha256sum "$f" | awk '{print $1}' > "$f.sha256"
               printf '%s %s\n' "$f" "$(stat -c %s "$f")"
           done > MANIFEST.tmp && mv MANIFEST.tmp MANIFEST )
+        # An identity for this corpus, so an install can tell whether the
+        # one it holds is the one being served. The MANIFEST's sha covers
+        # every part name and size, so any repack changes it; the figures
+        # beside it are what makes a difference worth acting on legible.
+        ( cd "$STAGE/corpus" && {
+              printf 'manifest_sha256 %s\n' \
+                  "$(sha256sum MANIFEST | awk '{print $1}')"
+              printf 'packed %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+              rampart -gc 'var u = rampart.utils;
+                  try {
+                      var i = require("'"$LIPS"'/web/lib/corpus-inventory.js");
+                      u.printf("documents %d\narchives %d\nsnapshots %s\n",
+                               i.docs, i.archives, i.asof);
+                  } catch (e) {}' 2>/dev/null
+          } > VERSION.tmp && mv -f VERSION.tmp VERSION )
+        say "version" "$(awk '/^manifest_sha256/{print substr($2,1,16)}' \
+                         "$STAGE/corpus/VERSION")"
         # The uncompressed total, so the client can also check that the
         # EXTRACTED corpus will fit, not just the download.
         echo "$TOT" > "$STAGE/corpus/EXTRACTED"
@@ -287,17 +328,12 @@ if [ "$DO_ARCHIVES" -eq 1 ]; then
         echo "$b $sz" >> "$STAGE/archives/MANIFEST.tmp"
         [ "$DRY" -eq 1 ] && continue
         if [ "$COPY" -eq 0 ]; then
-            # Link the archive itself, not the zim/ entry: those entries
-            # are symlinks whenever the pool is on another filesystem
-            # than the build tree, and hard-linking a symlink lands on
-            # the symlink's own inode -- cross-device, so it would fall
-            # back to copying the archive in full. The pool and a staging
-            # tree on the same share are one filesystem, where this is
-            # free. A copy is still the fallback for a stage that really
-            # is elsewhere.
-            src=$(readlink -f "$z")
-            ln -f "$src" "$STAGE/archives/$b" 2>/dev/null \
-                || cp -f "$src" "$STAGE/archives/$b"
+            # NOTHING TO DO: the archive is already in the directory it
+            # is served from, because that is where it was fetched. This
+            # used to link it out of a pool, and fall back to copying the
+            # whole 530 GB when the staging tree turned out to be on
+            # another filesystem. There is no pool now, and no copy.
+            :
             # The pool keeps each archive's verified hash beside it, so
             # publishing it costs a link instead of re-reading 530 GB.
             # Only where the pool has none does --sha compute one, and

@@ -3,31 +3,48 @@
 #
 #   ./build.sh check                  what is here, what is missing
 #   ./build.sh <stage> [<stage> ...]  run those stages, in this order
-#   ./build.sh all                    every stage below, in order
+#   ./build.sh all                    urls through news, in order
+#                                     (package and copy are not in it)
 #
 # STAGES
 #   check    prerequisites, free space, and how far the build has got
+#   urls     move the archive list on to the current dumps. Kiwix keeps
+#            only the last dump or two, so a list written in October 404s
+#            by December. FIRST IN `all`, and worth knowing why: it makes
+#            the build want NEWER archives than the ones already
+#            downloaded, which is the point of a refresh and a surprise
+#            otherwise. Skip it (name the stages instead of `all`) to
+#            rebuild from the material already on disk.
 #   fetch    download the archives: ~570 GB, days on a home line
 #   meta     read each archive's own metadata -> notes/zim-meta.json
 #   import   extract and import, one archive at a time: the 210 HTML
 #            archives through JSONL, then the 5 PDF collections (~2 days)
-#   merge    copy the per-collection tables into `corpus` (~3 h)
-#   index    build corpus_cx, corpus_src, corpus_ttl (~12 h)
+#   merge    copy the per-collection tables into `corpus` (~35 min;
+#            it runs with noLocking, which needs rampart 0.7.6)
+#   index    build corpus_cx, corpus_src, corpus_ttl (~13 h measured at
+#            51.3M rows; corpus_cx is nearly all of it)
 #   links    put the imported archives in zim/, for kiwix to serve
 #   kiwix    kiwix-tools into zim/bin, and library.xml built from zim/
 #   news     the rolling news window: pages, ZIM, table (~2 h first
 #            run, a minute after that)
 #
-#   urls     NOT in `all`: move the archive list on to the current dumps.
-#            Kiwix keeps only the last dump or two, so a list written in
-#            October 404s by December. Refreshing it makes the build want
-#            NEWER archives than the ones already downloaded, so run it
-#            deliberately -- on a fresh machine before `fetch`, or when
-#            rebuilding the corpus from current material.
+#   package  NOT in `all`: build the download payloads into
+#            downloads/alpacalips -- the corpus in gzip parts with a
+#            MANIFEST and checksums, the news, the runtime tarball, the
+#            archive links, INVENTORY.txt and INSTRUCTIONS.txt
+#   copy     NOT in `all`: publish what `package` built to the download
+#            directory (--download-dir)
 #
 # OPTIONS
-#   --data DIR   archives, staging and job lists         (default $DATA)
-#   --db DIR     the build database                      (default build/corpus)
+#   --data DIR   archives, staging and job lists
+#   --db DIR     the build database
+#   --download-dir DIR   where `copy` publishes the payloads
+#
+#                These three are remembered: each defaults to what
+#                config.local.sh says, or to a directory in this tree if
+#                it says nothing, and giving one writes it back to
+#                config.local.sh for later runs. `./build.sh check`
+#                prints all three.
 #   --jobs N     parallel downloads                      (default 4)
 #   --mem PCT    indexMem for the index stage            (default 70)
 #   --yes        do not ask before a stage that costs hours, and accept
@@ -40,6 +57,11 @@
 # importer skips an archive already in lips_sources, the merge skips a
 # table already in corpus_merged, the index stage skips an index already
 # in SYSINDEX, and the news stage re-uses its page cache.
+#
+# FOR ONE LOG OF A WHOLE REBUILD, redirect the invocation:
+#   ./build.sh -y import merge index links kiwix > notes/rebuild.log 2>&1
+# Every stage's output goes to that file in order, and each stage also
+# keeps its own notes/build-<stage>.log.
 #
 # Each stage also writes notes/build-<stage>.log, so a stage left running
 # over a weekend can be read afterwards.
@@ -55,7 +77,12 @@ LIPS=$(cd "$(dirname "$0")" && pwd)
 # under `set -u` it exits without it.
 HERE=$LIPS
 [ -r "$LIPS/tools/rampart-find.sh" ] && . "$LIPS/tools/rampart-find.sh"
-MIN_RAMPART=${MIN_RAMPART:-0.7.5}
+# 0.7.6, not 0.7.5: the merge sets noLocking on its connection and the
+# index sets optimize "indexbatchbuild", and 0.7.5's sql.set() knows
+# neither -- it raises, deep inside a stage. The RUNTIME floor is lower
+# and lives in tools/rampart-find.sh: an install needs neither feature,
+# and a 0.7.6 build writes byte-identical index files.
+MIN_RAMPART=${MIN_RAMPART:-0.7.6}
 
 JOBS=4
 MEM=70
@@ -64,27 +91,75 @@ DRY=0
 
 usage() { sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'; }
 
+# config.local.sh holds what this machine chose: it is read by config.sh
+# before any default is applied, so writing a setting there is what makes
+# it stick. Comments and unrelated lines are preserved.
+LOCAL=$LIPS/config.local.sh
+conf_put() {   # conf_put NAME VALUE
+    local n=$1 v=$2 tmp
+    tmp=$(mktemp) || return 1
+    if [ -f "$LOCAL" ]; then
+        grep -v -e "^$n=" -e "^# $n is set by build.sh" "$LOCAL" > "$tmp"
+    else
+        printf '# Written by build.sh. Read by config.sh before its own\n' > "$tmp"
+        printf '# defaults, so what is here wins.\n' >> "$tmp"
+    fi
+    printf '# %s is set by build.sh\n%s=${%s:-%s}\n' "$n" "$n" "$n" "$v" >> "$tmp"
+    mv -f "$tmp" "$LOCAL"
+}
+PUT_DATA="" PUT_DB="" PUT_DL=""
+
 STAGES=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --data)    DATA="$2"; META=$DATA/meta; KIWIX=$DATA/kiwix
-                   STAGE=$DATA/staging; shift 2 ;;
-        --db)      DB="$2"; shift 2 ;;
+                   STAGE=$DATA/staging; PUT_DATA=$DATA; shift 2 ;;
+        --db)      DB="$2"; PUT_DB=$DB; shift 2 ;;
+        --download-dir) DOWNLOAD_DIR="$2"; PUT_DL=$DOWNLOAD_DIR; shift 2 ;;
         --jobs)    JOBS="$2"; shift 2 ;;
         --mem)     MEM="$2"; shift 2 ;;
         --yes|-y)  YES=1; shift ;;
         --dry-run|-n) DRY=1; shift ;;
         -h|--help) usage; exit 0 ;;
         -*)        echo "build.sh: unknown option $1" >&2; exit 1 ;;
-        all)       STAGES="$STAGES fetch meta import merge index links kiwix news"; shift ;;
-        check|urls|fetch|meta|import|merge|index|links|kiwix|news)
+        # urls leads: it moves the archive list on to the current dumps,
+        # and without it fetch works from the list on disk, so a newer
+        # dump is never found and every stage after it is a no-op.
+        # package and copy stay out -- publishing is its own decision.
+        all)       STAGES="$STAGES urls fetch meta import merge index links kiwix news"; shift ;;
+        check|urls|fetch|meta|import|merge|index|links|kiwix|news|package|copy)
                    STAGES="$STAGES $1"; shift ;;
         *)         echo "build.sh: unknown stage $1" >&2; usage >&2; exit 1 ;;
     esac
 done
-[ -n "$STAGES" ] || { usage; exit 1; }
+# A setting given on the command line is remembered, so it need not be
+# repeated -- and is reported, because a silent write to config.local.sh
+# would be worse than the flag it replaces.
+for _p in DATA:"$PUT_DATA" DB:"$PUT_DB" DOWNLOAD_DIR:"$PUT_DL"; do
+    _n=${_p%%:*}; _v=${_p#*:}
+    [ -n "$_v" ] || continue
+    conf_put "$_n" "$_v" \
+        && printf '  %-22s %s (written to config.local.sh)\n' "$_n" "$_v"
+done
 
-export LIPS DATA META KIWIX STAGE DB
+# Settings alone are a complete command: `./build.sh --download-dir DIR`
+# records it and stops, which is how you look at or change where things
+# live without starting hours of work.
+if [ -z "$STAGES" ]; then
+    if [ -n "$PUT_DATA$PUT_DB$PUT_DL" ]; then exit 0; fi
+    usage; exit 1
+fi
+
+# Where `copy` publishes. config.local.sh may have set it; otherwise the
+# payloads stay in the tree and `copy` has nothing to do but say so.
+DOWNLOAD_DIR=${DOWNLOAD_DIR:-}
+# Built where they are served. The corpus parts are 115 GiB: staging
+# them on the local disk and copying them to the share afterwards wrote
+# 230 GiB to produce 115. With no download directory configured there is
+# nowhere to serve from, so it falls back to the tree.
+PAYLOADS=${DOWNLOAD_DIR:-$LIPS/downloads/alpacalips}
+
+export LIPS DATA META KIWIX STAGE DB DOWNLOAD_DIR
 
 NOTES=$LIPS/notes
 mkdir -p "$NOTES" || exit 1
@@ -208,6 +283,20 @@ stage_check() {
         say "  news" "not built yet"
     fi
     echo
+    # Where this build keeps things, and who decided: a flag that is
+    # remembered is only safe if it can be read back.
+    printf '\n  directories\n'
+    for _d in "DATA:$DATA" "DB:$DB" "DOWNLOAD_DIR:${DOWNLOAD_DIR:-}"; do
+        _n=${_d%%:*}; _v=${_d#*:}
+        if [ -z "$_v" ]; then
+            say "  $_n" "not set -- payloads stay in $PAYLOADS"
+        elif [ -f "$LOCAL" ] && grep -q "^$_n=" "$LOCAL"; then
+            say "  $_n" "$_v (config.local.sh)"
+        else
+            say "  $_n" "$_v (default in this tree)"
+        fi
+    done
+
     if [ "$PREREQ" -ne 0 ]; then
         echo "  SOMETHING ABOVE IS MISSING OR TOO OLD. The build will fail on"
         echo "  the first stage that needs it, so fix it before starting."
@@ -237,6 +326,10 @@ stage_fetch() {
     # kiwix catalogue's Metalinks (hash-verified), the maxi flavours
     # fetched from a fast mirror, and gutenberg, which only
     # download.kiwix.org carries.
+    # Measured order first: mkjobs.js reads what this writes, and the
+    # mirrors differ by more than an order of magnitude. Advisory -- with
+    # no ranking file mkjobs rotates mirrors as it always did.
+    run sh "$LIPS/tools/download/rank-mirrors.sh" "$META" || true
     run rampart "$LIPS/tools/download/mkjobs.js" --kiwix || die "mkjobs failed"
     run bash "$LIPS/tools/download/fetch.sh" kiwix /kiwix/ "$JOBS"
     run rampart "$LIPS/tools/download/maxijobs.js" || die "maxijobs failed"
@@ -332,7 +425,23 @@ stage_merge() {
     [ -f "$DB/lips_sources.tbl" ] || die "nothing imported yet"
     run rampart "$LIPS/tools/merge-into-corpus.js" --db "$DB" --list
     confirm "merge copies every outstanding table into corpus (~3 h)." || return 0
-    run rampart "$LIPS/tools/merge-into-corpus.js" --db "$DB" --go
+    # Exit 2 means the corpus is behind its tables: a table it was built
+    # from is gone, or one has been re-imported since. Appending then
+    # would duplicate whatever changed, so the tool refuses and this
+    # decides. The merge is re-run after the drop, which is why the drop
+    # is its own invocation: the log shows which step failed.
+    MRC=0
+    run rampart "$LIPS/tools/merge-into-corpus.js" --db "$DB" --go || MRC=$?
+    if [ "$MRC" -eq 2 ]; then
+        confirm "corpus is behind its tables: drop it and merge all of them again (~3 h)." \
+            || return 0
+        run rampart "$LIPS/tools/merge-into-corpus.js" --db "$DB" \
+            --rebuild --go || die "could not drop the corpus"
+        run rampart "$LIPS/tools/merge-into-corpus.js" --db "$DB" --go \
+            || die "the re-merge failed"
+    elif [ "$MRC" -ne 0 ]; then
+        die "merge-into-corpus.js failed ($MRC)"
+    fi
 
     # The MCP server opens its instructions with a description of the
     # corpus. Written here, from lips_sources, because this is where that
@@ -383,9 +492,11 @@ stage_links() {
     LOG=$NOTES/build-links.log
     [ -f "$DB/lips_sources.tbl" ] \
         || die "nothing imported yet -- there is no manifest to link from"
-    # zim/ holding links rather than copies is what makes flavor 2 cost
-    # nothing: the archives stay in the pool and kiwix serves them there.
-    run rampart "$LIPS/tools/zim-link.js"
+    # No links: the archives are already in the directory they are
+    # served from. What is left worth doing is confirming that every
+    # archive the corpus was built from is there, and the right size,
+    # before kiwix is told to serve them.
+    run rampart "$LIPS/tools/zim-verify.js"
 }
 
 # ------------------------------------------------------------------ kiwix
@@ -414,6 +525,52 @@ stage_kiwix() {
 }
 
 # ------------------------------------------------------------------- news
+stage_package() {
+    head_ "package"
+    LOG=$NOTES/build-package.log
+    [ -f "$DB/corpus.tbl" ] || die "no corpus at $DB -- nothing to package"
+    # Everything a download needs, into the tree. --sha hashes what has no
+    # published checksum yet; the archives cost links rather than copies
+    # when the payload directory and the pool share a filesystem.
+    run bash "$LIPS/tools/make-payloads.sh" --all --sha --stage "$PAYLOADS" \
+        || die "make-payloads.sh failed"
+    say "packaged" "$PAYLOADS"
+    [ -n "$DOWNLOAD_DIR" ] \
+        && say "next" "./build.sh copy  -> $DOWNLOAD_DIR" \
+        || say "next" "./build.sh copy --download-dir DIR"
+}
+
+stage_copy() {
+    head_ "copy"
+    LOG=$NOTES/build-copy.log
+    [ -n "$DOWNLOAD_DIR" ] \
+        || die "no download directory: pass --download-dir DIR once and it is remembered"
+    [ -d "$PAYLOADS" ] && [ -n "$(ls -A "$PAYLOADS" 2>/dev/null)" ] \
+        || die "nothing packaged yet: run ./build.sh package first"
+    mkdir -p "$DOWNLOAD_DIR" || die "cannot create $DOWNLOAD_DIR"
+    # Payloads are built where they are served, so these are usually the
+    # same directory and there is nothing to copy. rsync of a directory
+    # onto itself with --delete is not something to find out by running.
+    if [ "$(cd "$PAYLOADS" 2>/dev/null && pwd -P)" = \
+         "$(cd "$DOWNLOAD_DIR" 2>/dev/null && pwd -P)" ]; then
+        say "nothing to copy" "payloads are written in $DOWNLOAD_DIR already"
+        return 0
+    fi
+    say "from" "$PAYLOADS"
+    say "to" "$DOWNLOAD_DIR"
+    say "size" "$(du -sh "$PAYLOADS" 2>/dev/null | cut -f1)"
+    confirm "copy publishes the payloads, replacing what is served now." || return 0
+    if command -v rsync >/dev/null 2>&1; then
+        # --partial so an interrupted copy resumes; --delete so a payload
+        # the build no longer produces stops being served.
+        run rsync -a --partial --delete "$PAYLOADS/" "$DOWNLOAD_DIR/" \
+            || die "rsync failed"
+    else
+        run cp -R "$PAYLOADS/." "$DOWNLOAD_DIR/" || die "cp failed"
+    fi
+    say "published" "$(du -sh "$DOWNLOAD_DIR" 2>/dev/null | cut -f1) in $DOWNLOAD_DIR"
+}
+
 stage_news() {
     head_ "news"
     LOG=$NOTES/build-news.log
@@ -440,6 +597,27 @@ stage_news() {
 
 # Only check returns a status worth propagating -- every other stage
 # calls die() on failure. A non-zero exit lets check gate a script.
+# The floor, before anything runs. stage_check does its own reporting
+# and must keep working on an old rampart in order to say so, but every
+# other stage would otherwise fail somewhere deeper: on 0.7.5 the merge
+# raises on sql.set({noLocking}) and the index on optimize.
+for s in $STAGES; do
+    [ "$s" = "check" ] && continue
+    if have rampart; then
+        rv=$(rampart_version "$(command -v rampart)" 2>/dev/null)
+        if [ -n "$rv" ] && ! ver_ge "$rv" "$MIN_RAMPART"; then
+            echo "rampart $rv is too old for the build: $MIN_RAMPART or" \
+                 "newer is needed." >&2
+            echo "  the merge needs sql.set({noLocking}) and the index" \
+                 "needs optimize 'indexbatchbuild'." >&2
+            echo "  ./build.sh check reports what it finds; the runtime" \
+                 "still installs on 0.7.5." >&2
+            exit 1
+        fi
+    fi
+    break
+done
+
 RC=0
 for s in $STAGES; do
     case "$s" in
@@ -453,6 +631,8 @@ for s in $STAGES; do
         links)  stage_links ;;
         kiwix)  stage_kiwix ;;
         news)   stage_news ;;
+        package) stage_package ;;
+        copy)   stage_copy ;;
     esac
 done
 printf '\n=== build.sh done  %s\n' "$(date '+%F %T')"

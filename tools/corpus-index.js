@@ -44,6 +44,7 @@ var sql = new Sql.init(D, true);
 
 var DROP = flag("drop"), LIST = flag("list"), ONLY = opt("only");
 var REBUILD = flag("rebuild");
+var NOBATCH = flag("no-batch");
 if (REBUILD && DROP) {
     printf("--rebuild and --drop are opposites: --rebuild deliberately "
            + "keeps the existing index and re-issues the same create, "
@@ -140,6 +141,36 @@ printf("corpus: %d rows\n\n", rows);
    otherwise. Measured 2026-11-06 on this box: 80 was worse than 40 --
    it thrashed, spilled twice anyway, and ran slower per row. */
 if (MEM !== null) sql.set({ indexMem: MEM });
+
+/* A Metamorph build read-locks the table intermittently so that other
+   connections can write while it runs -- two lock server requests a row.
+   Nothing writes to corpus during a build, so this holds one read lock
+   for the whole build instead, which also lets texis read the table with
+   a larger buffer. Only corpus_cx is affected: a btree is always built
+   under a continuous read lock whatever this says.
+
+   The cost is that the table cannot be written until the build is nearly
+   done, which is why --no-batch exists for a build on a table something
+   else must keep writing to.
+
+   An unknown optimization name is meant to raise, and sql.get() to
+   report what differs from the defaults. On an older rampart it does
+   neither -- any string is accepted silently and nothing is reported --
+   so the read-back is printed either way: a value confirms it, and a
+   blank means this rampart cannot say and the build time is the only
+   evidence. */
+if (!NOBATCH) {
+    sql.set({ optimize: "indexbatchbuild" });
+    var ob = "";
+    try { ob = String(sql.get("optimize") || ""); } catch (e) { ob = ""; }
+    printf("indexbatchbuild on (read-back: %s): the table stays "
+           + "read-locked for the whole build\n",
+           ob.length ? ob : "not reported by this build");
+} else {
+    printf("indexbatchbuild OFF (--no-batch): intermittent read locks, "
+           + "so the table stays writable\n");
+}
+
 
 WANT.forEach(function (w) {
     if (ONLY && w.name !== ONLY) return;

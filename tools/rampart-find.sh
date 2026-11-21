@@ -18,6 +18,10 @@
 #
 # Callers set HERE (the runtime directory) before sourcing this.
 
+# THE RUNTIME FLOOR. An install reads the published corpus and serves
+# it; it uses nothing newer. The build sets its own, higher floor in
+# build.sh, because the merge and the index use sql.set() keys that
+# arrived in 0.7.6.
 MIN_RAMPART=${MIN_RAMPART:-0.7.5}
 RAMPART_INSTALLER=${RAMPART_INSTALLER:-https://get.rampart.dev/}
 RAMPART_CONF=${RAMPART_CONF:-$HERE/alpacalips.conf}

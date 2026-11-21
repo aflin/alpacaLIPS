@@ -62,6 +62,7 @@ KEEP_PARTS=0
 CHOSE=0          # did the command line already say what to install?
 WANT_CORPUS=0    # set by --corpus, or below when no selector was given
 ACCEPT_LIC=0     # --accept-license, passed through to setup-kiwix.sh
+REPLACE_CORPUS=0 # --replace-corpus: fetch a newer corpus over the one here
 OWN_RAMPART=0
 WANT_RAMPART=1
 WANT_NEWS=0
@@ -87,6 +88,7 @@ while [ $# -gt 0 ]; do
         --no-rampart)  WANT_RAMPART=0; shift ;;
         --keep-parts) KEEP_PARTS=1; shift ;;
         --accept-license) ACCEPT_LIC=1; shift ;;
+        --replace-corpus) REPLACE_CORPUS=1; WANT_CORPUS=1; CHOSE=1; shift ;;
         -h|--help)  sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown option $1" >&2; exit 1 ;;
     esac
@@ -202,10 +204,12 @@ elif [ -f "$HERE/tools/zstd-probe.tar.zst" ] \
 else
     ZSTD_DECOMP=""
 fi
+# Only reached when the payload really is .tar.zst: the published set is
+# gzip, which every target system can already unpack.
 need_zstd() {
     [ -n "$ZSTD_DECOMP" ] && return 0
-    echo "The payloads are compressed with zstd, which this system cannot" >&2
-    echo "unpack. Install it and run this again:" >&2
+    echo "This mirror publishes zstd-compressed payloads, which this system" >&2
+    echo "cannot unpack. Install zstd and run this again:" >&2
     echo "  macOS         brew install zstd" >&2
     echo "  Debian/Ubuntu sudo apt install zstd" >&2
     echo "  Fedora/RHEL   sudo dnf install zstd" >&2
@@ -248,6 +252,193 @@ fetch() {   # fetch <url> <outfile> [expected-bytes]
     return 1
 }
 
+# ---- mirrors -------------------------------------------------------
+# The archives are mirrored by people whose job it is, and those mirrors
+# sit closer to most installs than this project's single port does. They
+# are tried first so that being popular costs the mirrors' bandwidth
+# rather than ours; what they have not got still comes from us.
+MIRROR_BASES=""; MIRROR_PICK=""; UPSTREAM_MAP=""
+
+# MIRRORS is one base URL per line, UPSTREAM is "<archive> <path>" --
+# both published by the build, which verified every path upstream before
+# writing it.
+mirrors_remote() {
+    [ -n "$MIRROR_BASES" ] && return 0
+    UPSTREAM_MAP="$HERE/zim/.upstream"
+    MIRROR_BASES=$(curl -fsL --max-time 60 "$BASE/archives/MIRRORS" 2>/dev/null)
+    if curl -fsL --max-time 60 "$BASE/archives/UPSTREAM" \
+            -o "$UPSTREAM_MAP.new" 2>/dev/null; then
+        mv -f "$UPSTREAM_MAP.new" "$UPSTREAM_MAP"
+    else
+        rm -f "$UPSTREAM_MAP.new"
+    fi
+    [ -n "$MIRROR_BASES" ] && [ -s "$UPSTREAM_MAP" ]
+}
+
+upstream_path() {   # upstream_path <archive>  -> "<path> <mask>"
+    [ -s "${UPSTREAM_MAP:-}" ] || return 1
+    awk -v z="$1" '$1 == z { print $2, $3; found = 1; exit }
+                   END { exit !found }' "$UPSTREAM_MAP"
+}
+
+# The base URL of mirror <n>, counting from 0 as the mask does.
+mirror_base() {  # mirror_base <n>
+    echo "$MIRROR_BASES" | awk -v n="$1" 'NR == n + 1 { print; exit }'
+}
+
+# A path this particular mirror is known to have. Measuring every mirror
+# with one fixed path is what dropped two good mirrors on the first live
+# run: coverage is partial, and a 404 is not slowness.
+mirror_testpath() {  # mirror_testpath <n>
+    awk -v n="$1" '{
+        split($3, m, ",")
+        for (i in m) if (m[i] == n) { print $2; exit }
+    }' "$UPSTREAM_MAP"
+}
+
+# Measure, because the published order is no guide: kiwix's own endpoint
+# measured 0.3 MB/s against dotsrc's 7.8 on the same machine and the same
+# file. Latency is no guide either -- the mirror that answers fastest
+# delivered least. And since three successive probes named three
+# different winners, this drops what is broken rather than crowning one:
+# whatever clears the floor shares the work.
+# A mirror must clear both floors: half a megabyte a second at all, and
+# a quarter of whatever the fastest one managed. The second is what keeps
+# a 0.6 MB/s mirror from being handed a third of the chunks and deciding
+# when the file finishes.
+MIRROR_FLOOR=524288
+MIRROR_RATIO=4
+mirrors_pick() {
+    [ -n "$MIRROR_PICK" ] && return 0
+    [ -n "$MIRROR_BASES" ] || return 1
+    nm=$(echo "$MIRROR_BASES" | grep -c .)
+    say "mirrors" "measuring $nm (a few seconds)"
+    mi=0
+    MIRROR_PICK=$(while [ "$mi" -lt "$nm" ]; do
+        m=$(mirror_base "$mi")
+        tp=$(mirror_testpath "$mi")
+        mi=$((mi + 1))
+        [ -n "$m" ] && [ -n "$tp" ] || continue
+        sp=$(curl -s -o /dev/null -m 12 -r 0-8388607 \
+                  -w '%{speed_download}' "$m$tp" 2>/dev/null)
+        printf '%s %s\n' "${sp%%.*}" "$m"
+    done | sort -rn | awk -v f="$MIRROR_FLOOR" -v r="$MIRROR_RATIO" \
+        'NR == 1 { best = $1 }
+         $1 >= f && $1 * r >= best { print $2; n++ }
+         n >= 3 { exit }' | tr '\n' ' ')
+    if [ -z "$MIRROR_PICK" ]; then
+        say "mirrors" "none fast enough; fetching from $BASE"
+        return 1
+    fi
+    for m in $MIRROR_PICK; do
+        say "" "$(echo "$m" | sed -e 's|https://||' -e 's|/.*||')"
+    done
+    return 0
+}
+
+# Round-robin pick, so consecutive chunks land on different mirrors.
+spread_url() {  # spread_url <n> <url> [<url> ...]
+    _n=$1; shift; _c=0
+    for _u in "$@"; do
+        [ "$_c" -eq "$_n" ] && { echo "$_u"; return 0; }
+        _c=$((_c + 1))
+    done
+    echo "$1"
+}
+
+# One chunk, resuming from whatever of it is already on disk. A whole
+# wave is what becomes durable in .part, so without this an interrupt
+# loses every chunk in flight -- the entire file, for anything small
+# enough to be a single wave.
+spread_get() {   # spread_get <chunkfile> <from> <to> <url>
+    _cf=$1; _cfrom=$2; _cto=$3; _cu=$4
+    _need=$(( _cto - _cfrom + 1 ))
+    _h=$(fsize "$_cf"); _h=${_h:-0}
+    # Longer than its own range: a leftover from a run that chunked
+    # differently. Not worth reasoning about.
+    if [ "$_h" -gt "$_need" ]; then rm -f "$_cf"; _h=0; fi
+    [ "$_h" -eq "$_need" ] && return 0
+    if [ "$_h" -gt 0 ]; then
+        curl -s -f -L -m 3600 2>>"$DLLOG" -r "$(( _cfrom + _h ))-$_cto" -o "$_cf.t" "$_cu" || return 1
+        cat "$_cf.t" >> "$_cf" || return 1
+        rm -f "$_cf.t"
+        return 0
+    fi
+    curl -s -f -L -m 3600 2>>"$DLLOG" -r "$_cfrom-$_cto" -o "$_cf" "$_cu"
+}
+
+# One archive over eight connections spread across the mirrors, because
+# a single connection to any of them is shaped to a few MB/s while the
+# link does far more. Measured 39 MB/s over three mirrors, a third each.
+#
+# Fixed 512 MB chunks rather than one range per connection: an
+# interrupted run then resumes at the last whole chunk instead of
+# restarting a 100 GB range, and chunks are appended to <out>.part in
+# order and deleted as they land, so the disk never holds the archive
+# twice. A chunk that comes back short is retried down the URL list --
+# ours is last in it -- because a hole cannot be left behind.
+SPREAD_CH=536870912
+fetch_spread() {   # fetch_spread <out> <bytes> <url> [<url> ...]
+    _o=$1; _want=$2; shift 2
+    [ "$_want" -gt 0 ] 2>/dev/null || return 1
+    [ $# -gt 0 ] || return 1
+    _nu=$#
+    mkdir -p "$(dirname "$_o")"
+    # Chunk from the file, not a constant: at a fixed 512 MB a 1.6 GB
+    # archive is three chunks and so runs three connections, which
+    # measured a third of what eight do. Clamped so the huge ones still
+    # move in pieces a resume can afford to lose.
+    _ch=$(( _want / 8 ))
+    [ "$_ch" -gt 536870912 ] && _ch=536870912
+    [ "$_ch" -lt 16777216 ] && _ch=16777216
+    _pos=0
+    if [ -f "$_o.part" ]; then
+        _pos=$(fsize "$_o.part"); _pos=${_pos:-0}
+        if [ "$_pos" -ge "$_want" ] 2>/dev/null; then rm -f "$_o.part"; _pos=0; fi
+        [ "$_pos" -gt 0 ] && say "resuming" \
+            "$(hum "$_pos") of $(hum "$_want") already here" >&2
+    fi
+    _k=0
+    while [ "$_pos" -lt "$_want" ]; do
+        _j=0
+        while [ "$_j" -lt 8 ]; do
+            _from=$(( _pos + _j * _ch ))
+            [ "$_from" -ge "$_want" ] && break
+            _to=$(( _from + _ch - 1 ))
+            [ "$_to" -ge "$_want" ] && _to=$(( _want - 1 ))
+            _u=$(spread_url $(( _k % _nu )) "$@")
+            spread_get "$_o.c.$_j" "$_from" "$_to" "$_u" &
+            _j=$((_j + 1)); _k=$((_k + 1))
+        done
+        wait
+        _i=0
+        while [ "$_i" -lt "$_j" ]; do
+            _from=$(( _pos + _i * _ch ))
+            _to=$(( _from + _ch - 1 ))
+            [ "$_to" -ge "$_want" ] && _to=$(( _want - 1 ))
+            _exp=$(( _to - _from + 1 ))
+            _got=$(fsize "$_o.c.$_i"); _got=${_got:-0}
+            if [ "$_got" -ne "$_exp" ]; then
+                # Down the list, ours last: a mirror that has not got
+                # this archive costs the ranges it was handed, no more.
+                for _u in "$@"; do
+                    spread_get "$_o.c.$_i" "$_from" "$_to" "$_u" || continue
+                    _got=$(fsize "$_o.c.$_i"); _got=${_got:-0}
+                    [ "$_got" -eq "$_exp" ] && break
+                done
+            fi
+            if [ "$_got" -ne "$_exp" ]; then rm -f "$_o.c".*; return 1; fi
+            cat "$_o.c.$_i" >> "$_o.part" \
+                || { rm -f "$_o.c".*; return 1; }
+            rm -f "$_o.c.$_i"
+            _i=$((_i + 1))
+        done
+        _pos=$(( _pos + _j * _ch ))
+        [ "$_pos" -gt "$_want" ] && _pos=$_want
+    done
+    mv -f "$_o.part" "$_o"
+}
+
 # Bytes actually written. Allocated blocks rather than length, so a file
 # that is sparse or preallocated still reads as what has arrived.
 fbytes() {  # fbytes <file>
@@ -287,6 +478,12 @@ progress_loop() {
         # absent, so the sum is what is on disk at this moment.
         pnow=$(( $(fbytes "$PROG_FILE") + $(fbytes "$PROG_FILE.part") \
                  + $(fbytes "$PROG_FILE.chunk") ))
+        # A spread fetch has up to eight chunks in flight that are not
+        # in .part yet; without them the line sits still for a whole
+        # wave and then jumps by gigabytes.
+        for pc in "$PROG_FILE".c.*; do
+            [ -f "$pc" ] && pnow=$(( pnow + $(fbytes "$pc") ))
+        done
         prate=$(( pnow - plast )); [ "$prate" -lt 0 ] && prate=0
         plast=$pnow
         ppct=""; peta=""; pdone=0
@@ -341,6 +538,9 @@ dl_stop() {
     [ -n "${XPID:-}" ] && kill "$XPID" 2>/dev/null
     pkill -P $$ curl 2>/dev/null || true         # a foreground transfer
     [ -n "${FIFO:-}" ] && rm -f "$FIFO"
+    # Chunk parts are left where they are: .part holds every whole chunk
+    # and a re-run carries on from it. Only the half-written ones go.
+    [ -n "${PROG_FILE:-}" ] && rm -f "$PROG_FILE".c.* 2>/dev/null
     rm -f "$DLLOG" 2>/dev/null
     return 0
 }
@@ -572,7 +772,7 @@ if [ "$NEWS_SET" -eq 0 ]; then
     elif [ "${CHECK_ONLY:-0}" -eq 1 ]; then
         WANT_NEWS=0
     elif news_remote; then
-        NTSZ=$(echo "$NMF" | awk '$1 == "news.tar.zst" { printf "%.0f", $2 }')
+        NTSZ=$(echo "$NMF" | awk '$1 ~ /^news\.tar\./ { printf "%.0f", $2; exit }')
         NZSZ=$(echo "$NMF" | awk '$1 ~ /\.zim$/ { printf "%.0f", $2 }')
         echo
         echo "The news window covers what happened after the Wikipedia dump:"
@@ -776,11 +976,16 @@ if [ "$WANT_NEWS" -eq 1 ]; then
     echo
     echo "updating the news table"
     news_remote || { echo "no news payload at $BASE/news/" >&2; exit 1; }
+    # Whatever the publisher compressed it with: the corpus parts and the
+    # zim are named by the MANIFEST too, and this was the one name still
+    # written out here, so a change of format broke every refresh.
+    NTAR=$(echo "$NMF" | awk '$1 ~ /^news\.tar\./ { print $1; exit }')
+    [ -n "$NTAR" ] || { echo "no news tarball listed at $BASE/news/" >&2; exit 1; }
     NEWSDIR=$DATA/news
     NDL=$DATA/.news-dl
     mkdir -p "$NDL"
 
-    TARSHA=$(curl -fsL --max-time 60 "$BASE/news/news.tar.zst.sha256" 2>/dev/null | tr -dc '0-9a-f')
+    TARSHA=$(curl -fsL --max-time 60 "$BASE/news/$NTAR.sha256" 2>/dev/null | tr -dc '0-9a-f')
     HAVESHA=$(cat "$NEWSDIR/.installed.sha" 2>/dev/null | tr -dc '0-9a-f')
     NEWS_CHANGED=1
     if [ -n "$TARSHA" ] && [ "$TARSHA" = "$HAVESHA" ]; then
@@ -789,19 +994,23 @@ if [ "$WANT_NEWS" -eq 1 ]; then
     fi
 
     if [ "$NEWS_CHANGED" -eq 1 ]; then
-        TSIZE=$(echo "$NMF" | awk '$1 == "news.tar.zst" { printf "%.0f", $2 }')
+        TSIZE=$(echo "$NMF" | awk -v t="$NTAR" '$1 == t { printf "%.0f", $2 }')
         FREE=$(freebytes "$DATA")
         if [ -n "${FREE:-}" ] && [ -n "${TSIZE:-}" ] && [ "$((TSIZE * 6))" -gt "$FREE" ]; then
             echo "NOT ENOUGH SPACE in $DATA for the news table" >&2
             exit 1
         fi
-        say "downloading" "news.tar.zst ($(hum "${TSIZE:-0}"))"
-        fetch "$BASE/news/news.tar.zst" "$NDL/news.tar.zst" >/dev/null 2>&1 \
+        say "downloading" "$NTAR ($(hum "${TSIZE:-0}"))"
+        fetch "$BASE/news/$NTAR" "$NDL/$NTAR" >/dev/null 2>&1 \
           || { echo "news download failed" >&2; exit 1; }
-        verify "$NDL/news.tar.zst" "$BASE/news/news.tar.zst.sha256" || exit 1
+        verify "$NDL/$NTAR" "$BASE/news/$NTAR.sha256" || exit 1
         rm -rf "$NDL/unpack"; mkdir -p "$NDL/unpack"
-        need_zstd || exit 1
-        $ZSTD_DECOMP < "$NDL/news.tar.zst" | tar -xf - -C "$NDL/unpack" \
+        case $NTAR in
+            *.tar.zst) need_zstd || exit 1; NDECOMP=$ZSTD_DECOMP ;;
+            *.tar.gz)  NDECOMP="gzip -dc" ;;
+            *) echo "unrecognised news payload: $NTAR" >&2; exit 1 ;;
+        esac
+        $NDECOMP < "$NDL/$NTAR" | tar -xf - -C "$NDL/unpack" \
           || { echo "could not unpack the news table" >&2; exit 1; }
         [ -f "$NDL/unpack/news/news.tbl" ] \
           || { echo "the news payload has no news.tbl" >&2; exit 1; }
@@ -812,7 +1021,7 @@ if [ "$WANT_NEWS" -eq 1 ]; then
         rm -rf "$NEWSDIR.old"
         [ -d "$NEWSDIR" ] && mv "$NEWSDIR" "$NEWSDIR.old"
         mv "$NDL/unpack/news" "$NEWSDIR"
-        rm -rf "$NEWSDIR.old" "$NDL/unpack" "$NDL/news.tar.zst"
+        rm -rf "$NEWSDIR.old" "$NDL/unpack" "$NDL/$NTAR"
         say "news table" "installed ($(du -sh "$NEWSDIR" 2>/dev/null | cut -f1))"
     fi
 
@@ -875,7 +1084,40 @@ if [ "$WANT_CORPUS" -eq 0 ] && [ ! -f "$DATA/corpus/corpus.tbl" ]; then
     echo
     say "corpus" "not here, and not asked for -- add --corpus for it"
 fi
-if [ "$WANT_CORPUS" -eq 1 ] && [ ! -f "$DATA/corpus/corpus.tbl" ]; then
+# A corpus is already here: is it the one being served? VERSION is a few
+# hundred bytes, so this costs nothing and answers the question the old
+# presence test could not.
+if [ -f "$DATA/corpus/corpus.tbl" ] && [ "$CHECK_ONLY" -eq 0 ]; then
+    PV=$(curl -fsL --max-time 60 "$BASE/corpus/VERSION" 2>/dev/null)
+    IV=""
+    [ -f "$DATA/corpus/.installed.version" ] \
+        && IV=$(cat "$DATA/corpus/.installed.version" 2>/dev/null)
+    PS=$(printf '%s' "$PV" | awk '/^manifest_sha256/{print $2}')
+    IS=$(printf '%s' "$IV" | awk '/^manifest_sha256/{print $2}')
+    if [ -z "$PS" ]; then
+        say "corpus" "published version unknown -- leaving yours alone"
+    elif [ -z "$IS" ]; then
+        say "corpus" "installed before versions were recorded"
+        say "" "pass --replace-corpus to fetch the published one"
+    elif [ "$PS" = "$IS" ]; then
+        say "corpus" "up to date"
+    else
+        echo
+        echo "A NEWER CORPUS IS PUBLISHED."
+        printf '%s\n' "$IV" | sed 's/^/  installed  /'
+        printf '%s\n' "$PV" | sed 's/^/  published  /'
+        echo
+        echo "Fetching it downloads the corpus again and replaces the"
+        echo "database in place. Stop the server first: a half-replaced"
+        echo "database is new tables against old indexes."
+        echo "  ./servers.sh stop && ./setup.sh --replace-corpus"
+        [ "$REPLACE_CORPUS" -eq 1 ] || say "corpus" "left as it is"
+    fi
+fi
+
+# Download when there is none, or when a replacement was asked for.
+if [ "$WANT_CORPUS" -eq 1 ] \
+   && { [ ! -f "$DATA/corpus/corpus.tbl" ] || [ "$REPLACE_CORPUS" -eq 1 ]; }; then
     echo
     echo "fetching the corpus (this is the big one)"
     mkdir -p "$DATA"
@@ -1068,6 +1310,9 @@ if [ "$WANT_CORPUS" -eq 1 ] && [ ! -f "$DATA/corpus/corpus.tbl" ]; then
     fi
     rm -rf "$PDIR"
     rm -f "${XLOG:-}"
+    # What this install now holds, for the comparison on the next run.
+    curl -fsL --max-time 60 "$BASE/corpus/VERSION" \
+        > "$DATA/corpus/.installed.version" 2>/dev/null || true
     say "corpus" "unpacked to $DATA/corpus ($(du -sh "$DATA/corpus" 2>/dev/null | cut -f1))"
 fi
 
@@ -1092,6 +1337,9 @@ if [ "$WANT_ARCHIVES" -eq 1 ]; then
     echo "fetching archives -- hundreds of GB; ctrl-c is safe, it resumes"
     mkdir -p "$HERE/zim"
     archives_remote || say "archives" "no MANIFEST at $BASE/archives/"
+    # Mirrors first, this host last. Both lists come from here, so an
+    # install needs nothing configured and nothing chosen.
+    if mirrors_remote; then mirrors_pick || true; fi
     # Same pre-flight as the corpus, over what is still missing.
     WANT=$(archives_want)
     AFREE=$(freebytes "$HERE/zim")
@@ -1125,8 +1373,39 @@ if [ "$WANT_ARCHIVES" -eq 1 ]; then
         if [ -n "${sz:-}" ] && [ "$have" = "$sz" ]; then continue; fi
         [ "$have" != "-1" ] && say "$f" "size $have != $sz, refetching"
         progress_start "$HERE/zim/$f" "${sz:-0}" "Downloading $AIDX of $ANUM"
-        fetch "$BASE/archives/$f" "$HERE/zim/$f" "${sz:-}" || { progress_stop
-            say "$f" "FAILED"; continue; }
+        # Mirrors in measured order with our own host last, so a dump
+        # that has rotated out upstream, or a mirror having a bad day,
+        # costs one failed range rather than the archive.
+        AURLS=""
+        if [ -n "$MIRROR_PICK" ] && AUP=$(upstream_path "$f"); then
+            APATH=${AUP%% *}; AMASK=${AUP##* }
+            # Only the mirrors that have this archive, in the order the
+            # probe put them. A mirror missing one collection still
+            # carries the others.
+            for m in $MIRROR_PICK; do
+                ai=0
+                for b in $MIRROR_BASES; do
+                    if [ "$b" = "$m" ]; then
+                        case ",$AMASK," in
+                            *",$ai,"*) AURLS="$AURLS $m$APATH" ;;
+                        esac
+                        break
+                    fi
+                    ai=$((ai + 1))
+                done
+            done
+        fi
+        AURLS="$AURLS $BASE/archives/$f"
+        AOK=0
+        if [ -n "${sz:-}" ] && [ "$sz" -gt 0 ] 2>/dev/null; then
+            fetch_spread "$HERE/zim/$f" "$sz" $AURLS && AOK=1
+        fi
+        # Nothing spread cleanly: one plain resumable stream from here,
+        # which is always there and always has every archive.
+        if [ "$AOK" -eq 0 ]; then
+            fetch "$BASE/archives/$f" "$HERE/zim/$f" "${sz:-}" || { progress_stop
+                say "$f" "FAILED"; continue; }
+        fi
         progress_stop
         got=$(fsize "$HERE/zim/$f")
         if [ -n "${sz:-}" ] && [ -n "$got" ] && [ "$got" != "$sz" ]; then
