@@ -32,7 +32,11 @@ function dataDir(lips) {
 /* The pool, plus any second pool beside it (a fast-mirror copy, say),
    but only directories that are there: a fresh clone has one. */
 function pools(data) {
-    var out = [process.env.KIWIX ? String(process.env.KIWIX) : data + "/kiwix"];
+    /* The same rule as config.sh: the archives are in the download
+       directory. data + "/kiwix" was the old pool, and a tool run
+       standalone would look there and report everything missing. */
+    var out = [process.env.KIWIX ? String(process.env.KIWIX)
+               : ((process.env.DOWNLOAD_DIR || data) + "/archives")];
     var list;
     try { list = u.readdir(data); } catch (e) { return out; }
     list.forEach(function (f) {

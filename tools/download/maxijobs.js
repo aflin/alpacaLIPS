@@ -10,7 +10,10 @@ var LB   = "https://lb.download.kiwix.org/zim/";
 var FAU  = "https://ftp.fau.de/kiwix/zim/";
 var LIPS  = rampart.utils.realPath(process.scriptPath + "/../..");
 var DATA = require("../paths.js").dataDir(LIPS);
-var DEST = (process.env.KIWIX || (DATA + "/kiwix")) + "/";
+/* The archives live in the download directory; config.sh owns the rule
+   and this follows it, env first. */
+var DEST = String(process.env.KIWIX
+                  || ((process.env.DOWNLOAD_DIR || DATA) + "/archives")) + "/";
 var META = process.env.META || (DATA + "/meta");
 var UA   = "rampart-keep/0.7 (offline corpus build; contact: admin@rampart.dev)";
 

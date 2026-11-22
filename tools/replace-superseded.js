@@ -55,7 +55,9 @@ function confValue(name, dflt) {
     return dflt;
 }
 var DATA  = confValue("DATA", HERE + "/downloads");
-var KIWIX = DATA + "/kiwix";
+/* Where the archives are, by the same rule as config.sh. */
+var KIWIX = String(process.env.KIWIX
+                   || ((process.env.DOWNLOAD_DIR || DATA) + "/archives"));
 var STG   = DATA + "/staging";
 
 var sql = new Sql.init(DB);

@@ -24,6 +24,12 @@ var curl = require("rampart-curl");
 var LIPS  = rampart.utils.realPath(process.scriptPath + "/../..");
 var ROOT = require("../paths.js").dataDir(LIPS);
 var META = process.env.META || (ROOT + "/meta");
+/* WHERE THE ARCHIVES GO, which is where they are served from. Not
+   ROOT + "/kiwix": that pool no longer exists, and building the path
+   here instead of asking is what made a second machine re-download
+   190 GB it already had. */
+var KIWIXDIR = String(process.env.KIWIX
+                      || ((process.env.DOWNLOAD_DIR || ROOT) + "/archives"));
 
 /* The measured order, written by rank-mirrors.sh: fastest host first,
    one per line. Absent on a machine that has not measured, and then the
@@ -102,7 +108,7 @@ if (doKiwix) {
         var head = ranked.slice(0, k), off = k ? idx % k : 0;
         var ordered = head.slice(off).concat(head.slice(0, off))
                           .concat(ranked.slice(k));
-        jobs.push([ ROOT + "/kiwix/" + fn[1], sh ? sh[1] : "-",
+        jobs.push([ KIWIXDIR + "/" + fn[1], sh ? sh[1] : "-",
                     sz ? sz[1] : "0" ].concat(ordered.slice(0, 4)).join("\t"));
         ok++;
         if (ok % 40 === 0) printf("  %d/%d\n", ok, list.length);

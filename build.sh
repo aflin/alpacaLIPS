@@ -138,7 +138,11 @@ PUT_DATA="" PUT_DB="" PUT_DL=""
 STAGES=""
 while [ $# -gt 0 ]; do
     case "$1" in
-        --data)    DATA="$2"; META=$DATA/meta; KIWIX=$DATA/kiwix
+        # KIWIX is NOT re-derived from DATA: the archives live in the
+        # download directory, and setting it here undid that for anyone
+        # who passed --data. config.sh owns that rule; this only moves
+        # DATA and the things that really are inside it.
+        --data)    DATA="$2"; META=$DATA/meta
                    STAGE=$DATA/staging; PUT_DATA=$DATA; shift 2 ;;
         --db)      DB="$2"; PUT_DB=$DB; shift 2 ;;
         --download-dir) DOWNLOAD_DIR="$2"; PUT_DL=$DOWNLOAD_DIR; shift 2 ;;
