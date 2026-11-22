@@ -25,7 +25,7 @@ runtime instead:
 curl -fsSL https://rampart.dev/install-alpacalips.sh | sh
 ```
 
-That fetches an 80 KB tarball into `./alpacalips`, checks it against its
+That fetches an 88 KB tarball into `./alpacalips`, checks it against its
 published checksum, asks what to install, and downloads it. It needs
 [rampart 0.7.5](https://rampart.dev/download.html) and installs it in the 
 same directory if rampart is not already installed. 
@@ -38,9 +38,9 @@ What it costs, as `setup.sh` reports it:
 | | download | on disk |
 |---|---|---|
 | **the corpus** — search, the MCP endpoint, the stored page text | 115 GiB | 276 GiB |
-| **the ZIM archives** (optional download) — the original pages, images and tables, read offline | 530 GiB | 530 GiB |
+| **the ZIM archives** (optional download) — the original pages, images and tables, read offline | 535 GiB | 535 GiB |
 | **the news window** — a rolling three months, refreshed daily | 70 MiB | 82 MiB |
-| everything | 645 GiB | 806 GiB |
+| everything | 650 GiB | 811 GiB |
 
 The corpus is the base install and the archives are optional: search,
 citations and the MCP tools all work without them, and what you give up is
@@ -53,8 +53,10 @@ peak: the database plus the couple of 5 GiB parts in flight. `setup.sh`
 checks free space before it starts. `--keep-parts` keeps every part
 instead, which needs 391 GiB and makes a retry cheap.
 
-Re-running it is how you update: the program files are replaced and the
-corpus, the archives and your settings are left alone.
+Updating is `./setup.sh --upgrade`: it takes the published runtime and
+replaces the program files, leaving the corpus, the archives and your
+settings alone. A plain `./setup.sh` says when something newer exists and
+offers it.
 
 Building the corpus yourself instead costs up to a week of machine time
 and 2.5 TB of working space.
@@ -66,17 +68,18 @@ and 2.5 TB of working space.
 | collection | documents | from |
 |---|---:|---|
 | Stack Overflow | 24,145,596 | `stackoverflow.com_en_all` |
-| Wiktionary | 9,086,361 | `wiktionary_en_all_nopic` |
+| Wiktionary | 10,478,247 | `wiktionary_en_all_nopic` |
 | Stack Exchange (161 sites) | 8,194,062 | `*.stackexchange.com_en_all` |
-| Wikipedia (incl. medicine) | 7,391,850 | `wikipedia_en_all_maxi` |
+| Wikipedia | 7,318,951 | `wikipedia_en_all_maxi` |
 | Wikisource | 700,131 | `wikisource_en_all_maxi` |
 | iFixit | 103,486 | `ifixit_en_all` |
 | Wikibooks | 102,874 | `wikibooks_en_all_maxi` |
 | Wikiquote | 73,926 | `wikiquote_en_all_maxi` |
+| Wikipedia (medicine) | 72,899 | `wikipedia_en_medicine_maxi` |
 | Project Gutenberg | 60,672 | 39 `gutenberg_en_lcc-*` slices |
-| Wikiversity | 54,279 | `wikiversity_en_all_maxi` |
+| Wikiversity | 54,254 | `wikiversity_en_all_maxi` |
 | Wikivoyage | 34,599 | `wikivoyage_en_all_maxi` |
-| zimgit survival guides | 107 | `zimgit-*` |
+| zimgit survival guides | 154 | `zimgit-*` |
 | **news window** | ~2,000 items | Wikipedia current events + the pages they cite |
 
 Everything comes from [Kiwix](https://library.kiwix.org) ZIM archives,
@@ -86,8 +89,8 @@ link to the original page, offline, with its pictures.
 
 ## How it is put together
 
-**One table, one index.** 215 archives land in 51 per-collection tables
-and are then copied into a single `corpus` table with one fulltext index
+**One table, one index.** 215 archives land in 215 staging tables, one
+each, and are then copied into a single `corpus` table with one fulltext index
 over `(Doc, Source)`. Every query is one search over everything, and
 ranking is comparable across collections because it comes from one index.
 
@@ -102,10 +105,10 @@ The corpus therefore ships with keyword ranking only: no model to load at
 query time and no embedding pass over 50M documents.
 
 **The text is stored, the pictures are not.** The corpus table holds the
-plain text of each page — 189 GB of it. Pictures, styling and layout
+plain text of each page — 215 GB of it. Pictures, styling and layout
 stay in the ZIM archives, so every result offers two links: the stored
 text, and the original page in its archive with its pictures intact.
-A corpus-only install is 275 GB; adding the archives is another 530 GB.
+A corpus-only install is 276 GiB; adding the archives is another 535 GiB.
 The smaller download is not a preview: the text of every document is
 complete, so an answer can still quote its source and cite it. The
 archives add a faithful offline copy of that source — the page as
@@ -133,7 +136,7 @@ alternatives and why, and the open questions.
 * **zim-tools** (`zimwriterfs`) — only for the news window
 * **kiwix-tools** (`kiwix-serve`, `kiwix-manage`) — only to serve the
   archives; `tools/setup-kiwix.sh` installs them into `zim/bin`
-* Space: ~570 GB of archives, up to 1.7 TB of extracted staging (can be
+* Space: ~535 GiB of archives, up to 1.7 TB of extracted staging (can be
   dropped as it goes), ~800 GB of database
 * Time: a few days of downloading, about two days of importing, and
   about half a day of indexing
@@ -145,40 +148,51 @@ alternatives and why, and the open questions.
 ```sh
 git clone git@github.com:aflin/alpacaLIPS.git && cd alpacaLIPS
 ./build.sh check              # prerequisites, space, progress
-./build.sh all                # fetch meta import merge index links news
+./build.sh all                # urls fetch meta import merge index links kiwix news
 ```
 
 Everything it writes stays inside the clone, and all of it is excluded
 by `.gitignore`:
 
 ```
-downloads/    what it fetches: kiwix/ the archives (570 GB), meta/ the
-              job lists, staging/ the extracted JSONL (up to 1.7 TB),
-              and alpacalips/ the payloads packed for publishing
+downloads/    archives/ the ZIM archives (~535 GiB), meta/ the job
+              lists, staging/ the extracted JSONL (up to 1.7 TB), and
+              alpacalips/ the payloads packed for publishing
 build/        the tables and their indexes: corpus/ the corpus (~800 GB),
               news/ and news-src/ the news window
-zim/          what kiwix serves: the imported archives, hard linked
-              from downloads/kiwix so they cost nothing twice, plus
-              library.xml and (optionally) the kiwix binaries
+zim/          what serving needs and nothing else: library.xml, the
+              kiwix binaries, the pid file. NOT the archives -- those
+              live in archives/, where they are also served from
 notes/        run logs and the lists the build derives as it goes
 dist/         the two trees tools/make-dist.sh assembles
 ```
 
 That is ~2.4 TB on one disk, and nothing is written outside the clone:
-no system directories, no sibling staging tree, and the only links are
-hard links inside it. `rm -rf` on the clone therefore reclaims
-everything, and a copy of the tree is a copy of the build.
+no system directories, no sibling staging tree, and **no links at all** --
+every archive is one file in the one directory it is read from and served
+from. `rm -rf` on the clone therefore reclaims everything, and a copy of
+the tree is a copy of the build.
 
 To put the big half somewhere else, write
 `config.local.sh` beside `config.sh` — it is read first and nothing
 below it is in the repo:
 
 ```sh
-DATA=${DATA:-/mnt/big/alpacalips}      # archives, job lists, staging
+DATA=${DATA:-/mnt/big/alpacalips}            # job lists and staging
+DOWNLOAD_DIR=${DOWNLOAD_DIR:-/srv/www/alpacalips}  # the archives, and
+                                             # what is published
 ```
 
-`./build.sh --data DIR` does the same for one run, and `--db DIR`
-moves the corpus database on its own.
+`./build.sh --data DIR` does the same for one run, `--db DIR` moves the
+corpus database on its own, and `--download-dir DIR` sets where the
+archives are fetched to and the payloads are published. All three are
+remembered in `config.local.sh`.
+
+The archives go straight to the download directory, because that is
+where a web server publishes them: they are fetched once, read there by
+the importer, served from there by kiwix, and published from there. The
+database stays on local disk, which is the only part of the build that
+is latency-bound.
 
 `all` is the whole thing, and any stage can be run on its own:
 
@@ -189,10 +203,25 @@ moves the corpus database on its own.
 | `fetch` | download every archive, hash-verified | days |
 | `meta` | read each archive's own metadata → `notes/zim-meta.json` | minutes |
 | `import` | extract to JSONL and import, archive by archive | ~2 days |
-| `merge` | copy the per-collection tables into `corpus` | ~3 h |
-| `index` | build `corpus_cx`, `corpus_src`, `corpus_ttl` | ~12 h |
-| `links` | symlink the imported archives into `zim/`, for kiwix | seconds |
+| `merge` | copy the per-collection tables into `corpus` | ~35 min |
+| `index` | build `corpus_cx`, `corpus_src`, `corpus_ttl` | ~13 h |
+| `links` | check every archive the corpus cites is present and the right size | seconds |
+| `kiwix` | kiwix-tools into `zim/bin`, and `library.xml` from the archives | a minute |
 | `news` | fetch the news window, build its ZIM and its table | ~2 h first run |
+
+Three more are **not** in `all`, because publishing is a separate
+decision from building:
+
+| stage | what it does | cost |
+|---|---|---|
+| `package` | the runtime tarball, news, kiwix-tools and the archive manifest | a minute |
+| `corpus` | the corpus download payload, in 5 GiB gzip parts | hours |
+| `copy` | publish payloads built elsewhere to `--download-dir` | minutes |
+
+`corpus` is separate from `package` because it is the only expensive one:
+it builds into `corpus-new/`, then renames `corpus/` to `corpus-old/` and
+`corpus-new/` to `corpus/`, so what is served is always a complete
+payload and the previous one can be put back.
 
 **Re-running a stage is how you resume one.** Nothing repeats work: a
 download skips a file that is already the right size, the importer skips
@@ -200,14 +229,15 @@ an archive already in `lips_sources`, the merge skips a table already in
 `corpus_merged`, and the index stage skips an index already in
 `SYSINDEX`. Each stage also writes `notes/build-<stage>.log`.
 
-`urls` is deliberately **not** part of `all`. Kiwix keeps only the last
-dump or two of each archive, so a list written in October will 404 by
-December; `tools/download/refresh-urls.sh` moves it on. Run it on a
-fresh machine before `fetch` — and understand that on a machine that has
-already downloaded archives it means wanting newer ones. The seven
-maxi-flavour archives are named with their dates in
-`tools/download/maxijobs.js` and are moved by hand; `refresh-urls.sh`
-prints what is current.
+`urls` leads `all`, and it is worth knowing what it does. Kiwix keeps
+only the last dump or two of each archive, so a list written in October
+will 404 by December; `tools/download/refresh-urls.sh` moves it on to
+what is current. That means a refresh **wants newer archives than the
+ones already on disk** — which is the point of running it, and a surprise
+if it was not expected. To rebuild from the material already downloaded,
+name the stages instead of `all`. The seven maxi-flavour archives are
+named with their dates in `tools/download/maxijobs.js` and are moved by
+hand; `refresh-urls.sh` prints what is current.
 
 ## The news window
 
@@ -219,7 +249,7 @@ them, packed into their own ZIM and their own small table.
 
 It is separate on purpose. The corpus index is never rebuilt for it, the
 window can be replaced daily, and it is a 70 MB download rather than a
-275 GB one.
+276 GiB one.
 
 ```sh
 tools/news-daily.sh            # the whole thing, safe from cron
@@ -280,7 +310,27 @@ tools/make-payloads.sh         # the hosted tarballs: corpus, archives, news, ru
 
 `make-payloads.sh` writes split, hash-verified tarballs and the MANIFEST
 that `setup.sh` checks against, so an interrupted download resumes and a
-truncated part is caught before it is unpacked.
+truncated part is caught before it is unpacked. In a build tree, prefer
+the stages: `./build.sh package` for everything cheap and
+`./build.sh corpus` for the payload that takes hours.
+
+The release number lives in `VERSION` at the repo root. Edit it by hand,
+or use `./build.sh --version 1.2.3` or `./build.sh --bump [patch|minor|major]`;
+`package` copies it into the published `version.txt` together with the
+runtime tarball's sha256. An install compares that file and offers to
+upgrade itself:
+
+```sh
+./setup.sh --upgrade     # take the published runtime and stop
+./setup.sh               # say if something newer exists, and offer it
+```
+
+The runtime fetches the ZIM archives from the kiwix mirrors before
+falling back to this project's own host, which is why `archives/MIRRORS`
+and `archives/UPSTREAM` are published alongside them: the first lists
+the mirrors, the second says where each archive sits on them and which
+of them actually have it. `tools/publish-mirrors.js` writes both, and
+has to be re-run whenever the archive set changes.
 
 The runtime tarball unpacks to one directory with `setup.sh` and
 `servers.sh` at the top of it:
@@ -294,14 +344,16 @@ cd alpacalips
 ## Layout
 
 ```
-config.sh              LIPS (this tree) and DATA (everything downloaded)
+config.sh              LIPS (this tree), DATA (job lists and staging),
+                       KIWIX (the archives, inside the download directory)
+VERSION                the release number, edited by hand or by --bump
 DESIGN.md              the measurements, the decisions, the open questions
 EVALUATION.md          six questions, answered with and without the corpus
 build.sh               the build, stage by stage
 tools/download/        job lists and the download pool
 extract/               ZIM -> JSONL extraction
 import/                the importer, the family selectors, the news pipeline
-tools/                 merge, index, link, package, serve
+tools/                 merge, index, verify, package, publish, serve
 web/                   the server: MCP endpoint, web UI, the tools
 setup.sh               installs a prebuilt corpus, for people who are not building one
 servers.sh             start, stop, status
@@ -309,7 +361,9 @@ servers.sh             start, stop, status
 
 Built data is not in the repository: `downloads/`, `build/`, `zim/`,
 `notes/` and `dist/` are all produced by the build and excluded in
-`.gitignore`, as is `config.local.sh`.
+`.gitignore`, as are `config.local.sh`, `alpacalips.conf` and
+`version.txt` — the last being what an *install* records about the
+release it took, not to be confused with the committed `VERSION`.
 
 Nor are the experiments. The measurements behind DESIGN.md were taken
 with a few dozen probes and one-off diagnostics -- extraction-ratio
