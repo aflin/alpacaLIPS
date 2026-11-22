@@ -59,6 +59,7 @@ WANT_ARCHIVES=0
 WANT_KIWIX=0
 CHECK_ONLY=0
 KEEP_PARTS=0
+WANT_UPGRADE=0   # --upgrade: take the published runtime and stop
 CHOSE=0          # did the command line already say what to install?
 WANT_CORPUS=0    # set by --corpus, or below when no selector was given
 ACCEPT_LIC=0     # --accept-license, passed through to setup-kiwix.sh
@@ -86,6 +87,7 @@ while [ $# -gt 0 ]; do
         --port)     PORT_SET="$2"; shift 2 ;;
         --own-rampart) OWN_RAMPART=1; shift ;;
         --no-rampart)  WANT_RAMPART=0; shift ;;
+        --upgrade)  WANT_UPGRADE=1; CHOSE=1; shift ;;
         --keep-parts) KEEP_PARTS=1; shift ;;
         --accept-license) ACCEPT_LIC=1; shift ;;
         --replace-corpus) REPLACE_CORPUS=1; WANT_CORPUS=1; CHOSE=1; shift ;;
@@ -359,12 +361,18 @@ spread_get() {   # spread_get <chunkfile> <from> <to> <url>
     if [ "$_h" -gt "$_need" ]; then rm -f "$_cf"; _h=0; fi
     [ "$_h" -eq "$_need" ] && return 0
     if [ "$_h" -gt 0 ]; then
-        curl -s -f -L -m 3600 2>>"$DLLOG" -r "$(( _cfrom + _h ))-$_cto" -o "$_cf.t" "$_cu" || return 1
+        curl -s -f -L -m 3600 --speed-limit 2048 --speed-time 45 \
+             -r "$(( _cfrom + _h ))-$_cto" -o "$_cf.t" "$_cu" \
+             2>>"$DLLOG" || return 1
         cat "$_cf.t" >> "$_cf" || return 1
         rm -f "$_cf.t"
         return 0
     fi
-    curl -s -f -L -m 3600 2>>"$DLLOG" -r "$_cfrom-$_cto" -o "$_cf" "$_cu"
+    # --speed-time: a connection that stops delivering is given up on, so
+    # the chunk goes to the next mirror instead of holding the wave for
+    # the whole -m budget.
+    curl -s -f -L -m 3600 --speed-limit 2048 --speed-time 45 \
+         -r "$_cfrom-$_cto" -o "$_cf" "$_cu" 2>>"$DLLOG"
 }
 
 # One archive over eight connections spread across the mirrors, because
@@ -401,6 +409,11 @@ fetch_spread() {   # fetch_spread <out> <bytes> <url> [<url> ...]
     _k=0
     while [ "$_pos" -lt "$_want" ]; do
         _j=0
+        # The pids of this wave's chunks, and nothing else. A bare `wait`
+        # here waits for every child of this shell -- including the
+        # progress loop, which never exits -- and hangs the install at
+        # 100% with no transfer running.
+        _cpids=""
         while [ "$_j" -lt 8 ]; do
             _from=$(( _pos + _j * _ch ))
             [ "$_from" -ge "$_want" ] && break
@@ -408,9 +421,10 @@ fetch_spread() {   # fetch_spread <out> <bytes> <url> [<url> ...]
             [ "$_to" -ge "$_want" ] && _to=$(( _want - 1 ))
             _u=$(spread_url $(( _k % _nu )) "$@")
             spread_get "$_o.c.$_j" "$_from" "$_to" "$_u" &
+            _cpids="$_cpids $!"
             _j=$((_j + 1)); _k=$((_k + 1))
         done
-        wait
+        for _cp in $_cpids; do wait "$_cp" 2>/dev/null; done
         _i=0
         while [ "$_i" -lt "$_j" ]; do
             _from=$(( _pos + _i * _ch ))
@@ -437,6 +451,119 @@ fetch_spread() {   # fetch_spread <out> <bytes> <url> [<url> ...]
         [ "$_pos" -gt "$_want" ] && _pos=$_want
     done
     mv -f "$_o.part" "$_o"
+}
+
+# ---- versions ------------------------------------------------------
+# version.txt at the download root: what the published release is. The
+# copy beside this script is what this install took. Not VERSION:
+# that name belongs to the repo's own release number, and an install
+# run from a clone would overwrite it. The
+# runtime hash is what actually decides whether an upgrade changes
+# anything -- the date only says which way.
+VER_REMOTE=""
+
+ver_field() {  # ver_field <text> <key>
+    printf '%s\n' "$1" | awk -v k="$2" '$1 == k { print $2; exit }'
+}
+
+ver_remote() {
+    [ -n "$VER_REMOTE" ] && return 0
+    VER_REMOTE=$(curl -fsL --max-time 30 "$BASE/version.txt" 2>/dev/null)
+    [ -n "$VER_REMOTE" ]
+}
+
+ver_local() {
+    [ -f "$HERE/version.txt" ] || return 1
+    cat "$HERE/version.txt"
+}
+
+# Does the published release differ from what is installed? Prints a
+# one-line reason when it does.
+ver_newer() {
+    ver_remote || return 1
+    _rv=$(ver_field "$VER_REMOTE" version)
+    _rs=$(ver_field "$VER_REMOTE" runtime_sha256)
+    _rd=$(ver_field "$VER_REMOTE" corpus_documents)
+    _lt=$(ver_local 2>/dev/null) || _lt=""
+    _lv=$(ver_field "${_lt:-}" version)
+    _ls=$(ver_field "${_lt:-}" runtime_sha256)
+    _ld=$(ver_field "${_lt:-}" corpus_documents)
+    [ -n "$_rs" ] || return 1
+    if [ -z "$_lt" ]; then
+        VER_WHY="this install has no recorded version"
+        return 0
+    fi
+    if [ "$_rs" != "$_ls" ]; then
+        VER_WHY="the runtime changed (published $_rv, installed ${_lv:-unknown})"
+        return 0
+    fi
+    if [ -n "$_rd" ] && [ -n "$_ld" ] && [ "$_rd" != "$_ld" ]; then
+        VER_WHY="the corpus changed ($_ld documents here, $_rd published)"
+        return 0
+    fi
+    return 1
+}
+
+# Replace the runtime with the published one. Never continues afterwards:
+# this script is one of the files it just overwrote.
+do_upgrade() {
+    ver_remote || { echo "cannot read $BASE/version.txt" >&2; return 1; }
+    _rv=$(ver_field "$VER_REMOTE" version)
+    _rs=$(ver_field "$VER_REMOTE" runtime_sha256)
+    say "published" "${_rv:-unknown}"
+    _lt=$(ver_local 2>/dev/null) || _lt=""
+    [ -n "$_lt" ] && say "installed" "$(ver_field "$_lt" version)"
+
+    _ud=$HERE/.upgrade.$$
+    rm -rf "$_ud"; mkdir -p "$_ud" || return 1
+    say "fetching" "alpacalips-run.tar.gz"
+    if ! curl -fsL --max-time 300 "$BASE/alpacalips-run.tar.gz" \
+              -o "$_ud/run.tar.gz"; then
+        rm -rf "$_ud"; echo "download failed" >&2; return 1
+    fi
+    # The hash version.txt published, so a truncated or substituted
+    # tarball cannot overwrite a working install.
+    if [ -n "$_rs" ] && [ "$_rs" != unknown ]; then
+        _got=$(sha256_of "$_ud/run.tar.gz")
+        if [ -z "$_got" ]; then
+            rm -rf "$_ud"
+            echo "cannot verify the download on this system" >&2; return 1
+        fi
+        if [ "$_got" != "$_rs" ]; then
+            rm -rf "$_ud"
+            echo "checksum mismatch -- not upgrading" >&2; return 1
+        fi
+        say "verified" "sha256 matches version.txt"
+    fi
+    if ! tar xzf "$_ud/run.tar.gz" -C "$_ud"; then
+        rm -rf "$_ud"; echo "could not unpack" >&2; return 1
+    fi
+    _src=$_ud/alpacalips
+    [ -d "$_src" ] || { rm -rf "$_ud"; echo "unexpected tarball layout" >&2
+                        return 1; }
+    # Only what the tarball holds. Data and alpacalips.conf are not in
+    # it and are not touched.
+    for _it in setup.sh servers.sh tools web; do
+        [ -e "$_src/$_it" ] || continue
+        rm -rf "$HERE/$_it.old"
+        [ -e "$HERE/$_it" ] && mv -f "$HERE/$_it" "$HERE/$_it.old"
+        if ! mv -f "$_src/$_it" "$HERE/$_it"; then
+            echo "could not replace $_it -- the old one is at $_it.old" >&2
+            rm -rf "$_ud"; return 1
+        fi
+        say "replaced" "$_it"
+    done
+    chmod +x "$HERE/setup.sh" "$HERE/servers.sh" 2>/dev/null
+    printf '%s\n' "$VER_REMOTE" > "$HERE/version.txt"
+    rm -rf "$_ud"
+    for _it in setup.sh servers.sh tools web; do
+        rm -rf "$HERE/$_it.old"
+    done
+    echo
+    say "upgraded to" "${_rv:-unknown}"
+    echo "  re-run ./setup.sh to continue: this script was one of the files"
+    echo "  replaced, and a shell reads a script as it goes."
+    return 0
 }
 
 # Bytes actually written. Allocated blocks rather than length, so a file
@@ -482,6 +609,9 @@ progress_loop() {
         # in .part yet; without them the line sits still for a whole
         # wave and then jumps by gigabytes.
         for pc in "$PROG_FILE".c.*; do
+            # .c.N.t holds bytes already counted in .c.N while a short
+            # chunk is being resumed; counting both reads over 100%.
+            case "$pc" in *.t) continue ;; esac
             [ -f "$pc" ] && pnow=$(( pnow + $(fbytes "$pc") ))
         done
         prate=$(( pnow - plast )); [ "$prate" -lt 0 ] && prate=0
@@ -501,10 +631,12 @@ progress_loop() {
         if [ "$pdone" -eq 1 ]; then
             # Downloaded, and now waiting its turn through the checksum
             # and the unpacker. Saying so beats a frozen "0/s".
-            printf '\r  %-24s %5s  %-22s' \
+            printf '\r  %-24s %5s  %-22s\033[K' \
                    "$PROG_LABEL" "$ppct" "complete, checking" >&2
         else
-            printf '\r  %-24s %5s  %9s/s  ETA %-7s' \
+            # \033[K: erase whatever the previous, longer line left to
+            # the right of this one.
+            printf '\r  %-24s %5s  %9s/s  ETA %-7s\033[K' \
                    "$PROG_LABEL" "$ppct" "$(hum "$prate")" "${peta:---}" >&2
         fi
         sleep 1
@@ -629,6 +761,36 @@ echo "runtime : $HERE"
 echo "data    : $DATA"
 echo "source  : $BASE"
 echo
+
+# ---- is anything newer published? -----------------------------------
+# --upgrade is the whole run: do_upgrade replaces this very script, so
+# nothing may execute after it.
+if [ "$WANT_UPGRADE" -eq 1 ]; then
+    echo
+    echo "upgrade from $BASE"
+    do_upgrade || exit 1
+    exit 0
+fi
+
+# A plain run just looks. One small file, and only worth a line when it
+# says something.
+VER_WHY=""
+if ver_newer; then
+    echo
+    say "a newer release" "$(ver_field "$VER_REMOTE" version) -- $VER_WHY"
+    if [ -t 0 ]; then
+        printf '  upgrade the runtime now? [y/N] '
+        read -r _ans
+        case "$_ans" in
+            y|Y|yes|YES)
+                do_upgrade || exit 1
+                exit 0 ;;
+            *) say "" "left alone; ./setup.sh --upgrade when you want it" ;;
+        esac
+    else
+        say "" "./setup.sh --upgrade takes it"
+    fi
+fi
 
 # ---- what is already here ------------------------------------------
 HAVE_CORPUS=0; HAVE_KIWIX=0
@@ -1441,6 +1603,17 @@ if [ "$DATA" = "$HERE/build" ]; then
 else
     echo "  DATA=$DATA ./servers.sh start"
 fi
+# What this install is now on, for the next run to compare against.
+# Written at the end so a failed or interrupted run does not claim a
+# version it did not finish installing.
+if [ -n "${VER_REMOTE:-}" ]; then
+    printf '%s\n' "$VER_REMOTE" > "$HERE/version.txt" 2>/dev/null \
+        && say "version" "$(ver_field "$VER_REMOTE" version)"
+elif ver_remote; then
+    printf '%s\n' "$VER_REMOTE" > "$HERE/version.txt" 2>/dev/null \
+        && say "version" "$(ver_field "$VER_REMOTE" version)"
+fi
+
 echo "then open http://$CITE_HOST:$PORT/  (MCP at /apps/mcp.json)"
 [ "$WANT_KIWIX" -eq 1 ] && echo "  kiwix:  bash $HERE/tools/zim-serve.sh start"
 exit 0

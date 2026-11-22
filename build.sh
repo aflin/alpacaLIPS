@@ -28,6 +28,10 @@
 #   news     the rolling news window: pages, ZIM, table (~2 h first
 #            run, a minute after that)
 #
+#   corpus   NOT in `all`: build the corpus download payload -- 277 GB
+#            read, ~115 GiB written, hours. Built in corpus-new/ beside
+#            the live one and swapped in with renames, keeping the
+#            previous payload as corpus-old/ to roll back to.
 #   package  NOT in `all`: build the download payloads into
 #            downloads/alpacalips -- the corpus in gzip parts with a
 #            MANIFEST and checksums, the news, the runtime tarball, the
@@ -51,6 +55,20 @@
 #                the kiwix-tools GPL-3 licence notice the kiwix stage
 #                would otherwise show and wait on
 #   --dry-run    print the commands a stage would run, and stop
+#   --only LIST  for `package`: which payloads to build, comma
+#                separated -- runtime, news, corpus, kiwix, archives.
+#                All of them by default, and the corpus alone is hours
+#                of compression, so publishing a new setup.sh wants
+#                `package --only runtime`.
+#
+#   --version X.Y.Z   set the release number in VERSION at the repo root
+#   --bump [part]     increment it: patch (the default), minor or major
+#
+#                Both write VERSION and exit without running a stage.
+#                That file is plain text and meant to be edited by hand
+#                too; `package` copies whatever it says into the
+#                published version.txt, which is what an install
+#                compares when it offers an upgrade.
 #
 # RE-RUNNING IS SAFE, AND IS HOW A FAILED STAGE IS RESUMED. Nothing
 # repeats work: a download skips a file already the right size, the
@@ -89,7 +107,15 @@ MEM=70
 YES=0
 DRY=0
 
-usage() { sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'; }
+# The header, however long it gets: from the second line to the first
+# line that is not a comment. A fixed line range -- which this was --
+# silently truncates the moment anything above it grows, and it had:
+# --jobs, --mem, --yes and --dry-run were all off the end.
+usage() {
+    awk 'NR == 1 { next }
+         /^#/    { sub(/^# ?/, ""); print; next }
+                 { exit }' "$0"
+}
 
 # config.local.sh holds what this machine chose: it is read by config.sh
 # before any default is applied, so writing a setting there is what makes
@@ -117,9 +143,33 @@ while [ $# -gt 0 ]; do
         --db)      DB="$2"; PUT_DB=$DB; shift 2 ;;
         --download-dir) DOWNLOAD_DIR="$2"; PUT_DL=$DOWNLOAD_DIR; shift 2 ;;
         --jobs)    JOBS="$2"; shift 2 ;;
+        # The release number lives in VERSION at the repo root, so it can
+        # be edited by hand; these two just save the arithmetic.
+        --version) printf '%s\n' "$2" > "$LIPS/VERSION"
+                   echo "version set to $2"; exit 0 ;;
+        --bump)    case "${2:-patch}" in
+                       major|minor|patch) BUMP=${2:-patch} ;;
+                       *) echo "--bump takes major, minor or patch" >&2
+                          exit 1 ;;
+                   esac
+                   OLDV=$(head -1 "$LIPS/VERSION" 2>/dev/null | tr -d ' \t')
+                   [ -n "$OLDV" ] || OLDV=0.0.0
+                   NEWV=$(awk -v v="$OLDV" -v w="$BUMP" 'BEGIN {
+                       n = split(v, a, ".")
+                       for (i = n + 1; i <= 3; i++) a[i] = 0
+                       if (w == "major") { a[1]++; a[2] = 0; a[3] = 0 }
+                       else if (w == "minor") { a[2]++; a[3] = 0 }
+                       else a[3]++
+                       printf "%s.%s.%s", a[1], a[2], a[3] }')
+                   printf '%s\n' "$NEWV" > "$LIPS/VERSION"
+                   echo "version $OLDV -> $NEWV"; exit 0 ;;
         --mem)     MEM="$2"; shift 2 ;;
         --yes|-y)  YES=1; shift ;;
         --dry-run|-n) DRY=1; shift ;;
+        # Which payloads `package` builds. Without it, every one --
+        # which means re-gzipping the whole database to publish a new
+        # 84 KB runtime tarball.
+        --only)    PKG_ONLY="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         -*)        echo "build.sh: unknown option $1" >&2; exit 1 ;;
         # urls leads: it moves the archive list on to the current dumps,
@@ -127,7 +177,7 @@ while [ $# -gt 0 ]; do
         # dump is never found and every stage after it is a no-op.
         # package and copy stay out -- publishing is its own decision.
         all)       STAGES="$STAGES urls fetch meta import merge index links kiwix news"; shift ;;
-        check|urls|fetch|meta|import|merge|index|links|kiwix|news|package|copy)
+        check|urls|fetch|meta|import|merge|index|links|kiwix|news|package|copy|corpus)
                    STAGES="$STAGES $1"; shift ;;
         *)         echo "build.sh: unknown stage $1" >&2; usage >&2; exit 1 ;;
     esac
@@ -158,6 +208,7 @@ DOWNLOAD_DIR=${DOWNLOAD_DIR:-}
 # 230 GiB to produce 115. With no download directory configured there is
 # nowhere to serve from, so it falls back to the tree.
 PAYLOADS=${DOWNLOAD_DIR:-$LIPS/downloads/alpacalips}
+PKG_ONLY=""      # --only runtime,news,... ; empty means all
 
 export LIPS DATA META KIWIX STAGE DB DOWNLOAD_DIR
 
@@ -198,6 +249,7 @@ stage_check() {
     say "staging"   "$STAGE"
     say "database"  "$DB"
     echo
+    say "  version" "$(head -1 "$LIPS/VERSION" 2>/dev/null || echo "not set")"
     echo "  prerequisites"
     PREREQ=0
     # ENFORCED, not just printed. The floor is real: 0.7.3 runs every
@@ -532,12 +584,42 @@ stage_package() {
     # Everything a download needs, into the tree. --sha hashes what has no
     # published checksum yet; the archives cost links rather than copies
     # when the payload directory and the pool share a filesystem.
-    run bash "$LIPS/tools/make-payloads.sh" --all --sha --stage "$PAYLOADS" \
+    # --only maps onto make-payloads' section flags; nothing given
+    # means --all, as before.
+    # Everything except the corpus, which has its own stage: this one is
+    # meant to be cheap enough to run whenever setup.sh changes.
+    PKGFLAGS="--runtime --news --kiwix --archives"
+    if [ -n "$PKG_ONLY" ]; then
+        PKGFLAGS=""
+        for sec in $(echo "$PKG_ONLY" | tr ',' ' '); do
+            case "$sec" in
+                runtime|news|corpus|kiwix|archives)
+                    PKGFLAGS="$PKGFLAGS --$sec" ;;
+                *) die "--only: unknown payload $sec (runtime, news, corpus, kiwix, archives)" ;;
+            esac
+        done
+        say "only" "$PKG_ONLY"
+    fi
+    run bash "$LIPS/tools/make-payloads.sh" $PKGFLAGS --sha --stage "$PAYLOADS" \
         || die "make-payloads.sh failed"
     say "packaged" "$PAYLOADS"
     [ -n "$DOWNLOAD_DIR" ] \
         && say "next" "./build.sh copy  -> $DOWNLOAD_DIR" \
         || say "next" "./build.sh copy --download-dir DIR"
+}
+
+# The corpus payload: 277 GB read, ~115 GiB written, hours. Separate
+# from `package` because it is the only expensive one, and because it
+# replaces what the server is publishing -- which make-payloads does by
+# building corpus-new/ and renaming, never by deleting first.
+stage_corpus() {
+    head_ "corpus"
+    LOG=$NOTES/build-corpus.log
+    [ -f "$DB/corpus.tbl" ] || die "no corpus table -- run the merge stage"
+    [ -n "$PAYLOADS" ] || die "no payload directory"
+    confirm "packaging the corpus reads 277 GB and writes ~115 GiB (hours)." \
+        || return 0
+    run bash "$LIPS/tools/make-payloads.sh" --corpus --sha --stage "$PAYLOADS"
 }
 
 stage_copy() {
@@ -632,6 +714,7 @@ for s in $STAGES; do
         kiwix)  stage_kiwix ;;
         news)   stage_news ;;
         package) stage_package ;;
+        corpus) stage_corpus ;;
         copy)   stage_copy ;;
     esac
 done

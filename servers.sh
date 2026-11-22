@@ -83,12 +83,85 @@ done
 
 say() { printf "  %-16s %s\n" "$1" "$2"; }
 
+# Wait up to <n> seconds for the server to be gone.
+stop_wait() {   # stop_wait <seconds>
+    local i=0
+    while [ "$i" -lt "${1:-5}" ]; do
+        rampart_pids >/dev/null 2>&1 || return 0
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# Wait up to <n> seconds for nothing to be listening on our port.
+port_free() {   # port_free <seconds>
+    local i=0 p
+    while [ "$i" -lt "${1:-10}" ]; do
+        p=$(port_pids | tr '\n' ' ')
+        [ -z "${p// /}" ] && return 0
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# Is this pid this install's server? The daemon's argv carries the
+# absolute path of its own config, which no other process has.
+is_our_server() {   # is_our_server <pid>
+    local a
+    a=$(ps -o args= -p "$1" 2>/dev/null) || return 1
+    case "$a" in
+        *"$WEB/server_conf.js"*) return 0 ;;
+    esac
+    return 1
+}
+
+# Whatever is listening on our port, if anything. Used as a last resort
+# and as the check that a stop actually freed the port.
+port_pids() {
+    local pt
+    pt=$(listen_port)
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltnpH "sport = :$pt" 2>/dev/null \
+            | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u
+    elif command -v lsof >/dev/null 2>&1; then
+        lsof -nP -iTCP:"$pt" -sTCP:LISTEN -t 2>/dev/null | sort -u
+    fi
+}
+
+# Every pid that is this install's server: the pid file when it is
+# telling the truth, plus an exact scan of argv. A stale or missing pid
+# file no longer means "not running".
+rampart_pids() {
+    local f="$WEB/server.pid" p out=""
+    if [ -f "$f" ]; then
+        p=$(cat "$f" 2>/dev/null)
+        if [ -n "${p:-}" ] && kill -0 "$p" 2>/dev/null && is_our_server "$p"
+        then out="$p"; fi
+    fi
+    # THE NEEDLE GOES THROUGH THE ENVIRONMENT. Passed as an argument it
+    # lands in awk's own argv, and the search matches itself: every call
+    # returns a fresh pid, and killing it can hit whatever inherited the
+    # number. pgrep -f is unsafe for the same reason.
+    local q
+    for q in $(LIPS_MATCH="$WEB/server_conf.js" ps -eo pid=,args= 2>/dev/null \
+               | LIPS_MATCH="$WEB/server_conf.js" \
+                 awk 'index($0, ENVIRON["LIPS_MATCH"]) { print $1 }'); do
+        [ "$q" = "$$" ] && continue
+        # Confirmed again from its argv: anything transient is gone by
+        # now, and whatever is left has to still look like our server.
+        is_our_server "$q" || continue
+        case " $out " in *" $q "*) ;; *) out="$out $q" ;; esac
+    done
+    out=$(printf '%s\n' $out)
+    [ -n "$out" ] || return 1
+    printf '%s\n' $out
+}
+
+# The old name, kept for the callers that only want one pid.
 rampart_pid() {
-    # The pid file the webserver module keeps beside server_conf.js.
-    local f="$WEB/server.pid"
-    [ -f "$f" ] || return 1
-    local p; p=$(cat "$f" 2>/dev/null)
-    [ -n "$p" ] && kill -0 "$p" 2>/dev/null && echo "$p"
+    rampart_pids 2>/dev/null | head -1
 }
 kiwix_pid() {
     local f="$HERE/zim/kiwix-serve.pid"
@@ -158,21 +231,57 @@ stop)
     if [ "$WITH_KIWIX" -eq 1 ] && [ -x "$HERE/tools/zim-serve.sh" ]; then
         bash "$HERE/tools/zim-serve.sh" stop 2>&1 | sed 's/^/    /'
     fi
-    if rampart_pid >/dev/null; then
+    if rampart_pids >/dev/null; then
+        say "rampart" "running (pid $(rampart_pids | tr '\n' ' '))"
         need_rampart || exit 1
-        # Same port and address as start: on macOS the launchd label
-        # carries the port, so a stop computed from a different one does
-        # not match the job it is meant to stop.
+        # Ask it to stop first: that is also what unloads the launchd job
+        # on macOS, where the label carries the port, so it must be run
+        # with the same port and address as start.
         ( cd "$WEB" && "$RAMPART" server_conf.js stop >/dev/null 2>&1 )
-        sleep 1
-        rampart_pid >/dev/null && say "rampart" "STILL RUNNING" || say "rampart" "stopped"
+        stop_wait 5
+        # Signal exactly the pids that were identified, read once: a
+        # second call could return a different set, and the gap between
+        # deciding and killing is where a recycled pid gets hurt.
+        local left
+        left=$(rampart_pids | tr '\n' ' ')
+        if [ -n "${left// /}" ]; then
+            say "" "did not stop on request; sending TERM to $left"
+            kill $left 2>/dev/null
+            stop_wait 8
+        fi
+        left=$(rampart_pids | tr '\n' ' ')
+        if [ -n "${left// /}" ]; then
+            say "" "still there; sending KILL to $left"
+            kill -9 $left 2>/dev/null
+            stop_wait 5
+        fi
+        if rampart_pids >/dev/null; then
+            say "rampart" "STILL RUNNING (pid $(rampart_pids | tr '\n' ' '))"
+        else
+            say "rampart" "stopped"
+            rm -f "$WEB/server.pid"
+        fi
     else
         say "rampart" "not running"
+        # A stale pid file left behind by a crash would otherwise make
+        # the next start believe the server is already up.
+        [ -f "$WEB/server.pid" ] && rm -f "$WEB/server.pid" \
+            && say "" "removed a stale $WEB/server.pid"
+        # Something else may still hold the port, which is what makes a
+        # later start fail with no explanation.
+        local op
+        op=$(port_pids | tr '\n' ' ')
+        if [ -n "${op// /}" ]; then
+            say "port $(listen_port)" "held by pid $op -- not ours, left alone"
+        fi
     fi
     ;;
 restart)
     "$0" stop  ${OPTS[@]+"${OPTS[@]}"}
-    sleep 1
+    # Wait for the port, rather than sleeping a second and hoping: a
+    # start that races a stop either fails to bind or leaves two
+    # servers, and both look like "restart did nothing".
+    port_free 10 || say "warning" "port $(listen_port) still held; starting anyway"
     "$0" start ${OPTS[@]+"${OPTS[@]}"}
     ;;
 status)

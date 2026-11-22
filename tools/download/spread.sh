@@ -74,7 +74,7 @@ fetch_spread() {
     fi
     _k=0
     while [ "$_pos" -lt "$_want" ]; do
-        _j=0
+        _j=0; _cpids=""
         while [ "$_j" -lt "$SPREAD_CONN" ]; do
             _from=$(( _pos + _j * _ch ))
             [ "$_from" -ge "$_want" ] && break
@@ -82,9 +82,12 @@ fetch_spread() {
             [ "$_to" -ge "$_want" ] && _to=$(( _want - 1 ))
             _u=$(spread_pick $(( _k % _nu )) "$@")
             spread_get "$_o.c.$_j" "$_from" "$_to" "$_u" &
+            _cpids="$_cpids $!"
             _j=$((_j + 1)); _k=$((_k + 1))
         done
-        wait
+        # Only this wave's chunks: a bare wait would also wait for
+        # whatever else the calling shell has in the background.
+        for _cp in $_cpids; do wait "$_cp" 2>/dev/null; done
         # In order, checking each length. A short chunk is retried down
         # the mirror list before the whole fetch gives up: a hole cannot
         # be left behind, and a mirror missing this file must not cost

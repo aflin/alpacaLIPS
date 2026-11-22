@@ -144,6 +144,32 @@ if [ "$DO_RUNTIME" -eq 1 ]; then
             || say "note" "could not publish the inventory"
         say "built" "$(basename "$T"), $(du -h "$T" | cut -f1)"
         say "setup.sh" "$(grep -c . "$LIPS/dist/$NAME/setup.sh") lines, from this tree"
+
+        # The version of the distribution as a whole. One small file an
+        # install can fetch to learn whether anything here is newer than
+        # what it has -- the runtime hash decides that for the software,
+        # and the corpus lines for the data.
+        # The release number from the repo, which is what a human
+        # quotes and what an install compares. `packed` below still
+        # records when, so an unchanged number with a new date is
+        # visible as such.
+        RELVER=$(head -1 "$LIPS/VERSION" 2>/dev/null | tr -d ' \t')
+        [ -n "$RELVER" ] || RELVER=0.0.0
+        RSHA=$(awk '{print $1}' "$T.sha256" 2>/dev/null)
+        CDOC=$(awk '$1 == "documents" { print $2 }' \
+                   "$STAGE/corpus/VERSION" 2>/dev/null)
+        CPACK=$(awk '$1 == "packed" { print $2 }' \
+                    "$STAGE/corpus/VERSION" 2>/dev/null)
+        {
+            printf 'version %s\n' "$RELVER"
+            printf 'packed %s\n'  "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            printf 'runtime_sha256 %s\n' "${RSHA:-unknown}"
+            [ -n "${CDOC:-}" ]  && printf 'corpus_documents %s\n' "$CDOC"
+            [ -n "${CPACK:-}" ] && printf 'corpus_packed %s\n' "$CPACK"
+        } > "$STAGE/version.txt.tmp" \
+          && mv -f "$STAGE/version.txt.tmp" "$STAGE/version.txt"
+        say "version.txt" "$(awk '$1 == "version" { print $2 }' \
+                                "$STAGE/version.txt")"
     fi
     echo
 fi
@@ -237,18 +263,24 @@ if [ "$DO_CORPUS" -eq 1 ]; then
     if [ "$DRY" -eq 1 ]; then
         echo "$FILES" | sed 's/^/      /'
     else
-        rm -f "$STAGE/corpus/corpus.$EXT.part-"* "$STAGE/corpus/MANIFEST"
+        # BUILT BESIDE THE LIVE PAYLOAD, SWAPPED IN AT THE END, because
+        # this writes into the directory the web server publishes.
+        # Deleting first leaves the download unusable until the rebuild
+        # finishes. Same filesystem, so the swap is a rename.
+        CDEST=$STAGE/corpus
+        CNEW=$STAGE/corpus-new
+        rm -rf "$CNEW"; mkdir -p "$CNEW" || exit 1
         tar -cf - $FILES \
           | progress "$TOT" "corpus" \
           | $CFILT \
           | split -b "$PART" -d -a 3 --additional-suffix="" \
-                  - "$STAGE/corpus/corpus.$EXT.part-"
+                  - "$CNEW/corpus.$EXT.part-"
         # MANIFEST is "<name> <bytes>", matching the archives one, so a
         # client can sum it and check free space BEFORE starting a 112 GB
         # download. Written to a temp file and renamed: hashing 112 GB
         # takes minutes, and a half-written MANIFEST read by setup.sh
         # would silently fetch a partial corpus.
-        ( cd "$STAGE/corpus" && for f in corpus.$EXT.part-*; do
+        ( cd "$CNEW" && for f in corpus.$EXT.part-*; do
               case "$f" in *.sha256) continue ;; esac
               sha256sum "$f" | awk '{print $1}' > "$f.sha256"
               printf '%s %s\n' "$f" "$(stat -c %s "$f")"
@@ -257,7 +289,7 @@ if [ "$DO_CORPUS" -eq 1 ]; then
         # one it holds is the one being served. The MANIFEST's sha covers
         # every part name and size, so any repack changes it; the figures
         # beside it are what makes a difference worth acting on legible.
-        ( cd "$STAGE/corpus" && {
+        ( cd "$CNEW" && {
               printf 'manifest_sha256 %s\n' \
                   "$(sha256sum MANIFEST | awk '{print $1}')"
               printf 'packed %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -269,15 +301,32 @@ if [ "$DO_CORPUS" -eq 1 ]; then
                   } catch (e) {}' 2>/dev/null
           } > VERSION.tmp && mv -f VERSION.tmp VERSION )
         say "version" "$(awk '/^manifest_sha256/{print substr($2,1,16)}' \
-                         "$STAGE/corpus/VERSION")"
+                         "$CNEW/VERSION")"
         # The uncompressed total, so the client can also check that the
         # EXTRACTED corpus will fit, not just the download.
-        echo "$TOT" > "$STAGE/corpus/EXTRACTED"
+        echo "$TOT" > "$CNEW/EXTRACTED"
         # Count MANIFEST lines, not the glob: corpus.*.part-* also matches
         # the .sha256 files written beside each part and doubles the count.
-        say "built" "$(wc -l < "$STAGE/corpus/MANIFEST") parts, $(du -sh "$STAGE/corpus" | cut -f1)"
+        say "built" "$(wc -l < "$CNEW/MANIFEST") parts, $(du -sh "$CNEW" | cut -f1)"
     fi
     echo
+    # Semi-atomic swap. Three renames on one filesystem, in an order
+    # that never leaves corpus/ missing or half-written:
+    #   corpus-old/ removed if a previous rollback copy is still there
+    #   corpus/     becomes corpus-old/
+    #   corpus-new/ becomes corpus/
+    # The previous payload stays as corpus-old/ -- 115 GiB kept on
+    # purpose, so a bad build can be put back by two renames.
+    if [ "$DRY" -eq 0 ] && [ -d "$CNEW" ]; then
+        COLD=$STAGE/corpus-old
+        [ -d "$COLD" ] && { rm -rf "$COLD" || exit 1; }
+        if [ -d "$CDEST" ]; then
+            mv -f "$CDEST" "$COLD" || exit 1
+        fi
+        mv -f "$CNEW" "$CDEST" || exit 1
+        say "published" "corpus/ swapped in"
+        [ -d "$COLD" ] && say "rollback" "the previous payload is in corpus-old/"
+    fi
 fi
 
 # -------------------------------------------------------------- kiwix
@@ -304,9 +353,9 @@ if [ "$DO_ARCHIVES" -eq 1 ]; then
     if [ "$COPY" -eq 1 ]; then
         echo "=== archives: materialised copies, published individually"
     else
-        echo "=== archives: hard linked from zim/, no disk used"
+        echo "=== archives: already in place, manifest and hashes only"
     fi
-    n=0; tot=0; copied=0; skipped=0; cbytes=0
+    n=0; tot=0; copied=0; skipped=0; cbytes=0; hashed=0; nohash=0
     : > "$STAGE/archives/MANIFEST.tmp"
     if [ "$COPY" -eq 1 ]; then
         free=$(df -B1 --output=avail "$STAGE" | tail -1)
@@ -333,28 +382,21 @@ if [ "$DO_ARCHIVES" -eq 1 ]; then
             # used to link it out of a pool, and fall back to copying the
             # whole 530 GB when the staging tree turned out to be on
             # another filesystem. There is no pool now, and no copy.
-            :
-            # The pool keeps each archive's verified hash beside it, so
-            # publishing it costs a link instead of re-reading 530 GB.
-            # Only where the pool has none does --sha compute one, and
-            # that one is kept beside the source so it is computed once
-            # ever rather than once per staging run.
-            if [ -f "$src.sha256" ]; then
-                ln -f "$src.sha256" "$STAGE/archives/$b.sha256" 2>/dev/null \
-                    || cp -f "$src.sha256" "$STAGE/archives/$b.sha256"
-            elif [ "$SHA" -eq 1 ]; then
-                if sha256sum "$src" 2>/dev/null | awk '{print $1}' \
-                       > "$src.sha256.tmp"; then
-                    mv -f "$src.sha256.tmp" "$src.sha256"
-                    ln -f "$src.sha256" "$STAGE/archives/$b.sha256" 2>/dev/null \
-                        || cp -f "$src.sha256" "$STAGE/archives/$b.sha256"
+            # The hash the installer verifies against sits beside the
+            # archive. One is written only when it is missing: computing
+            # it reads the archive once ever, not once per publish.
+            if [ ! -f "$z.sha256" ] && [ "$SHA" -eq 1 ]; then
+                if sha256sum "$z" 2>/dev/null | awk '{print $1}' \
+                       > "$z.sha256.tmp"; then
+                    mv -f "$z.sha256.tmp" "$z.sha256"
+                    hashed=$((hashed+1))
                 else
-                    rm -f "$src.sha256.tmp"
-                    sha256sum "$STAGE/archives/$b" | awk '{print $1}' \
-                        > "$STAGE/archives/$b.sha256"
+                    rm -f "$z.sha256.tmp"
+                    echo "  could not hash $b" >&2
                 fi
             fi
-            copied=$((copied+1)); continue
+            [ -f "$z.sha256" ] && copied=$((copied+1)) || nohash=$((nohash+1))
+            continue
         fi
         have=$(stat -c %s "$STAGE/archives/$b" 2>/dev/null || echo -1)
         if [ "$have" = "$sz" ]; then skipped=$((skipped+1)); continue; fi
