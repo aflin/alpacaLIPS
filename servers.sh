@@ -160,8 +160,15 @@ rampart_pids() {
 }
 
 # The old name, kept for the callers that only want one pid.
+# One pid, or failure. NOT `rampart_pids | head -1`: a pipeline's status
+# is head's, and head exits 0 on empty input -- so this returned success
+# with no pid, and start_rampart concluded the server was already up and
+# would not start it.
 rampart_pid() {
-    rampart_pids 2>/dev/null | head -1
+    local p
+    p=$(rampart_pids 2>/dev/null | head -1)
+    [ -n "$p" ] || return 1
+    printf '%s\n' "$p"
 }
 kiwix_pid() {
     local f="$HERE/zim/kiwix-serve.pid"
@@ -242,7 +249,6 @@ stop)
         # Signal exactly the pids that were identified, read once: a
         # second call could return a different set, and the gap between
         # deciding and killing is where a recycled pid gets hurt.
-        local left
         left=$(rampart_pids | tr '\n' ' ')
         if [ -n "${left// /}" ]; then
             say "" "did not stop on request; sending TERM to $left"
@@ -269,7 +275,6 @@ stop)
             && say "" "removed a stale $WEB/server.pid"
         # Something else may still hold the port, which is what makes a
         # later start fail with no explanation.
-        local op
         op=$(port_pids | tr '\n' ' ')
         if [ -n "${op// /}" ]; then
             say "port $(listen_port)" "held by pid $op -- not ours, left alone"
