@@ -23,6 +23,11 @@ rampart/
 # directories go on this particular disk.
 config.local.sh
 alpacalips.conf
+# NOT to be confused with VERSION, which IS committed: that is this
+# repo's release number, set by hand or by ./build.sh --bump. This one
+# is what an install records about the release it took, and ./setup.sh
+# run from a clone writes it right here.
+version.txt
 web/server_conf.js
 web/logs/
 web/server.pid
