@@ -160,12 +160,17 @@ if [ "$DO_RUNTIME" -eq 1 ]; then
                    "$STAGE/corpus/VERSION" 2>/dev/null)
         CPACK=$(awk '$1 == "packed" { print $2 }' \
                     "$STAGE/corpus/VERSION" 2>/dev/null)
+        # Terms per source, counted from lips_licenses rather than kept
+        # in step by hand. Absent on a corpus built before that table.
+        CLIC=$(rampart "$LIPS/tools/make-licenses.js" --db "$DB" --summary \
+                   2>/dev/null | head -1)
         {
             printf 'version %s\n' "$RELVER"
             printf 'packed %s\n'  "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
             printf 'runtime_sha256 %s\n' "${RSHA:-unknown}"
             [ -n "${CDOC:-}" ]  && printf 'corpus_documents %s\n' "$CDOC"
             [ -n "${CPACK:-}" ] && printf 'corpus_packed %s\n' "$CPACK"
+            [ -n "${CLIC:-}" ]  && printf 'licenses %s\n' "$CLIC"
         } > "$STAGE/version.txt.tmp" \
           && mv -f "$STAGE/version.txt.tmp" "$STAGE/version.txt"
         say "version.txt" "$(awk '$1 == "version" { print $2 }' \
@@ -247,13 +252,13 @@ if [ "$DO_CORPUS" -eq 1 ]; then
     cd "$DB" || { echo "no $DB" >&2; exit 1; }
     # SYS*.tbl is the catalog: without it the table files are unreadable,
     # which is the gap the earlier backup/ had.
-    # corpus_cx* not corpus_cx.*: the delta tiers are corpus_cx_D.btr,
-    # corpus_cx_T.btr and corpus_cx_P.tbl -- underscore, not dot, so a
+    # corpus_Doc_Source_ftx* not corpus_Doc_Source_ftx.*: the delta tiers are corpus_Doc_Source_ftx_D.btr,
+    # corpus_Doc_Source_ftx_T.btr and corpus_Doc_Source_ftx_P.tbl -- underscore, not dot, so a
     # dot glob silently drops them.
     # lips_sources and corpus_merged are NOT optional: the app reads them
     # for the collection list, the tiers and every citation URL, and
     # without them a search dies with "No such table: lips_sources".
-    FILES=$(ls -1 corpus.tbl corpus_cx* corpus_src.btr corpus_ttl.btr \
+    FILES=$(ls -1 corpus.tbl corpus_Doc_Source_ftx* corpus_SrcPath_x.btr corpus_Title_x.btr \
                   lips_sources* corpus_merged* SYS*.tbl 2>/dev/null)
     [ -n "$FILES" ] || { echo "no corpus files in $DB" >&2; exit 1; }
     TOT=$(du -cb $FILES | tail -1 | cut -f1)

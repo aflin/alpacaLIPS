@@ -1614,6 +1614,19 @@ elif ver_remote; then
         && say "version" "$(ver_field "$VER_REMOTE" version)"
 fi
 
+# Content terms vary by source and some of them restrict reuse, which a
+# download gives no other occasion to mention. The whole line is taken,
+# not ver_field's first word, because the value is prose.
+LIC_LINE=$(printf '%s\n' "${VER_REMOTE:-}" \
+    | awk '$1 == "licenses" { $1 = ""; sub(/^ /, ""); print; exit }')
+if [ -n "$LIC_LINE" ]; then
+    echo
+    echo "content licences: $LIC_LINE"
+    echo "  Sources keep their own terms. Every document page shows the"
+    echo "  licence for the source it came from, and a citation link leads"
+    echo "  to that page. Some sources do not permit commercial use."
+fi
+
 echo "then open http://$CITE_HOST:$PORT/  (MCP at /apps/mcp.json)"
 [ "$WANT_KIWIX" -eq 1 ] && echo "  kiwix:  bash $HERE/tools/zim-serve.sh start"
 exit 0

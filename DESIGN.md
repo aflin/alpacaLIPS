@@ -228,7 +228,7 @@ terms inside a document, and makes absence inspectable (§4, §10).
 
 ## 4. The index, and how ranking behaves
 
-One fulltext index, `corpus_cx`, over `(Doc, Source)`, with four word
+One fulltext index, `corpus_Doc_Source_ftx`, over `(Doc, Source)`, with four word
 expressions:
 
 | expression | what it captures |

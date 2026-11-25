@@ -1,4 +1,4 @@
-https://lb.download.kiwix.org/zim/wiktionary/wiktionary_en_all_nopic_2026-08.zim.meta4
+https://lb.download.kiwix.org/zim/wiktionary/wiktionary_en_all_nopic_2026-11.zim.meta4
 https://lb.download.kiwix.org/zim/stack_exchange/webmasters.stackexchange.com_en_all_2026-10.zim.meta4
 https://lb.download.kiwix.org/zim/other/zimgit-water_en_2024-08.zim.meta4
 https://lb.download.kiwix.org/zim/stack_exchange/salesforce.stackexchange.com_en_all_2026-10.zim.meta4
@@ -167,3 +167,15 @@ https://lb.download.kiwix.org/zim/stack_exchange/hsm.stackexchange.com_en_all_20
 https://lb.download.kiwix.org/zim/stack_exchange/vi.stackexchange.com_en_all_2026-10.zim.meta4
 https://lb.download.kiwix.org/zim/stack_exchange/drones.stackexchange.com_en_all_2026-10.zim.meta4
 https://lb.download.kiwix.org/zim/stack_exchange/stackoverflow.com_en_all_2026-07.zim.meta4
+https://lb.download.kiwix.org/zim/other/appropedia_en_all_maxi_2026-02.zim.meta4
+https://lb.download.kiwix.org/zim/stack_exchange/mathoverflow.net_en_all_2026-10.zim.meta4
+https://lb.download.kiwix.org/zim/other/proofwiki.org_en_all_maxi_2026-09.zim.meta4
+https://lb.download.kiwix.org/zim/other/gardenology.org_en_all_2026-09.zim.meta4
+https://lb.download.kiwix.org/zim/other/archlinux_en_all_maxi_2026-10.zim.meta4
+https://lb.download.kiwix.org/zim/other/gentoo_en_all_maxi_2026-07.zim.meta4
+https://lb.download.kiwix.org/zim/other/energypedia_en_all_nopic_2026-06.zim.meta4
+https://lb.download.kiwix.org/zim/other/librepathology_en_all_maxi_2026-09.zim.meta4
+https://lb.download.kiwix.org/zim/zimit/www.mankier.com_en_all_2026-10.zim.meta4
+https://lb.download.kiwix.org/zim/zimit/nhs.uk_en_medicines_2026-09b.zim.meta4
+https://lb.download.kiwix.org/zim/zimit/cd3wdproject.org_en_all_2026-11.zim.meta4
+https://lb.download.kiwix.org/zim/zimit/wwwnc.cdc.gov_en_all_2024-11.zim.meta4

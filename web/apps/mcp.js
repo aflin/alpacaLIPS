@@ -46,7 +46,7 @@ var INSTRUCTIONS = require(WEB + "/lib/mcp-instructions.js")(INV);
    server is noticed rather than served from the old files for ever;
    see the measurements there. Re-resolved per request below. */
 var db = require(WEB + "/lib/db.js");
-var CORPUS_FILES = ["corpus.tbl", "corpus_cx.dat"];
+var CORPUS_FILES = ["corpus.tbl", "corpus_Doc_Source_ftx.dat"];
 function corpusReopened() { tools.corpusReopened(); }
 function corpus() { return db.open(tools.DB, CORPUS_FILES, corpusReopened); }
 var sql = corpus();

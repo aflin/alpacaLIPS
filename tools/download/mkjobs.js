@@ -2,6 +2,7 @@
 /* Build the download job list for the offline-knowledge corpus.
  *
  *   rampart mkjobs.js [--kiwix] [--hf]
+ *   rampart mkjobs.js --name appropedia      # one archive -> jobs-one.tsv
  *
  * jobs.tsv, one line per file:
  *     dest <TAB> sha256-or-dash <TAB> bytes <TAB> url [<TAB> alt-url ...]
@@ -56,9 +57,18 @@ function mrankOf(u) {
 var UA   = "rampart-keep/0.7 (offline corpus build; contact: admin@rampart.dev)";
 
 function arg(n) { return process.argv.indexOf("--" + n) >= 0; }
+function argval(n) { var i = process.argv.indexOf("--" + n);
+                     return i > 0 ? process.argv[i + 1] : null; }
 var only = arg("kiwix") || arg("hf");
 var doKiwix = arg("kiwix") || !only;
 var doHf    = arg("hf")    || !only;
+
+/* One archive by name, for adding a single ZIM without rebuilding the
+   whole list. It implies kiwix, and writes its own file: $META/jobs.tsv
+   is on the share and a build may be reading it. */
+var NAME = argval("name");
+var JOBSFILE = NAME ? "jobs-one.tsv" : "jobs.tsv";
+if (NAME) { doKiwix = true; doHf = arg("hf"); }
 
 function get(u, t) {
     var r = curl.fetch(u, { headers: { "User-Agent": UA },
@@ -78,6 +88,17 @@ if (doKiwix) {
     mkdir(META + "/meta4");          /* recursive; first run has neither */
     var list = readFile(ulist, { returnString: true })
                  .split("\n").filter(function (l) { return l.trim().length; });
+    if (NAME) {
+        var want = String(NAME).toLowerCase();
+        list = list.filter(function (l) {
+            return l.toLowerCase().indexOf(want) >= 0;
+        });
+        if (!list.length) {
+            printf("kiwix: --name %s matched nothing in %s\n", NAME, ulist);
+            process.exit(1);
+        }
+        printf("kiwix: --name %s matched %d\n", NAME, list.length);
+    }
     printf("kiwix: resolving %d metalink(s)\n", list.length);
     var ok = 0, bad = 0;
     list.forEach(function (u, idx) {
@@ -155,12 +176,14 @@ if (doHf) {
     });
 }
 
-fprintf(META + "/jobs.tsv", "%s\n", jobs.join("\n"));
+fprintf(META + "/" + JOBSFILE, "%s\n", jobs.join("\n"));
 var tot = 0, nk = 0, nh = 0;
 jobs.forEach(function (j) {
     var f = j.split("\t");
     tot += Number(f[2]) || 0;
-    if (f[0].indexOf("/kiwix/") > 0) nk++; else nh++;
+    /* By destination, not by a "/kiwix/" path: the archives moved out of
+       that directory and every kiwix job then counted as hugging face. */
+    if (f[0].indexOf(KIWIXDIR) === 0) nk++; else nh++;
 });
-printf("\n%d job(s) (%d kiwix, %d hf), %.2f GB -> %s/jobs.tsv\n",
-       jobs.length, nk, nh, tot / 1073741824, META);
+printf("\n%d job(s) (%d kiwix, %d hf), %.2f GB -> %s/%s\n",
+       jobs.length, nk, nh, tot / 1073741824, META, JOBSFILE);

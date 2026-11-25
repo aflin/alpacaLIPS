@@ -342,7 +342,7 @@ if (!NOREG) {
 
 /* --index is for a one-archive table. A table fed by many archives
    (stackexchange takes 161) should be loaded first and indexed once:
-   use import/mkindex.js instead, since maintaining the index per INSERT
+   corpus carries the index instead, since maintaining one per INSERT
    is the wrong order for a bulk load. Existing indexes are skipped, so
    passing --index twice is harmless rather than an error. */
 if (INDEX) {

@@ -7,7 +7,7 @@
  * says nothing about whether those rows were later merged into corpus.
  * Asking corpus directly by Source would scan 48M rows, because the only
  * index carrying Source is the compound fulltext one. Instead each
- * table's own SrcPath values are looked up through corpus_src, which is
+ * table's own SrcPath values are looked up through corpus_SrcPath_x, which is
  * a btree: a present SrcPath means that table is merged.
  *
  * Several paths are probed per table, not one, because a single miss
@@ -55,7 +55,7 @@ names.forEach(function (t) {
                t, tbls[t].coll, "-", tbls[t].regDocs);
         return;
     }
-    /* Probe a few of this table's SrcPaths against corpus_src. */
+    /* Probe a few of this table's SrcPaths against corpus_SrcPath_x. */
     var paths = [];
     sql.exec("select SrcPath from " + t + ";", { maxRows: 5 },
              function (r) { paths.push(String(r.SrcPath)); });

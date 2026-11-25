@@ -36,7 +36,7 @@ var DB = ((typeof confData !== "undefined" && confData) ? String(confData)
  * event, so they are cleared when it reopens.
  */
 var db = require(WEB + "/lib/db.js");
-var CORPUS_FILES = ["corpus.tbl", "corpus_cx.dat"];
+var CORPUS_FILES = ["corpus.tbl", "corpus_Doc_Source_ftx.dat"];
 function corpusReopened() { SOURCES = null; DOCS = {}; ARCHIVES = 0; CORPUS = 0; }
 function corpus() { return db.open(DB, CORPUS_FILES, corpusReopened); }
 var sql = corpus();

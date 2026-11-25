@@ -1,14 +1,14 @@
 #!/bin/bash
 # Stage and import archives into the corpus, one at a time.
 #
-#   tools/run-import.sh [--db DIR] [--delete-staging] [--no-index]
+#   tools/run-import.sh [--db DIR] [--delete-staging]
 #                       <name> [<name> ...]
 #   tools/run-import.sh --list                 # what families.js picks
 #
-# --no-index skips the closing mkindex pass. mkindex indexes EVERY table
-# in lips_sources, so a run that adds staging tables destined to be merged
-# would otherwise fulltext-index all of them -- and every other unindexed
-# table too -- for indexes the merge discards.
+# The staging tables are NOT indexed. They are scanned once by the merge
+# and never read again, so an index on them is built and discarded. Each
+# table used to be searched directly, before everything moved into a
+# single corpus table with one fulltext index over it.
 #
 # For each archive: stage to JSONL if not already staged, then import.
 # Both steps are skippable, so the script is resumable: the importer
@@ -35,13 +35,11 @@ LIPS=${LIPS:-$(cd "$(dirname "$0")/.." && pwd)}
 . "$LIPS/config.sh"
 DB=${DB:-$LIPS/build/corpus}
 KEEP=1
-INDEX=1
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --db)           DB="$2"; shift 2 ;;
         --delete-staging) KEEP=0; shift ;;
-        --no-index)     INDEX=0; shift ;;
         # The summary half of t-families.js, but its complaint in full:
         # filtering first swallowed the "run build.sh meta" message and
         # printed nothing at all.
@@ -119,10 +117,6 @@ for name in "$@"; do
     fi
 done
 
-if [ "$INDEX" -eq 1 ]; then
-    echo "=== $(date +%H:%M:%S) run-import finished; building indexes"
-    rampart "$LIPS/import/mkindex.js" --db "$DB"
-else
-    echo "=== $(date +%H:%M:%S) run-import finished; --no-index, indexes not built"
-fi
+echo "=== $(date +%H:%M:%S) run-import finished; staging tables are not"
+echo "    indexed -- the merge scans them once and corpus carries the index"
 echo "=== $(date +%H:%M:%S) done"

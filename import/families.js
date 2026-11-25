@@ -17,6 +17,73 @@
  */
 
 var FAMILIES = {
+    /* ---- zimit / warc2zim crawls ----------------------------------
+       One family per SITE, not per scraper: a crawl preserves the site's
+       own HTML, so nothing is shared between these but the crawler. */
+
+    /* ManKier: one man page per entry, 72k of them. <main> has no id or
+       class on a man page -- only the index pages carry
+       main.main-content -- so the tag is the stable handle. It holds the
+       header, every section, and the Copyright section, which is how a
+       man page's own licence stays attached to its text. */
+    mankier: {
+        include: [ { by: "tag", value: "main" } ],
+        exclude: [],
+        pathPrefix: "www.mankier.com/",
+        /* Directory paths are section and package indexes: lists of page
+           names that the pages themselves already carry. */
+        pathExclude: [ /\/$/ ],
+        docHint: 8192
+    },
+
+    /* NHS medicines. main#maincontent is the article; the
+       nhsuk-width-container around it holds 94.9% because it adds the
+       header and footer. */
+    nhs: {
+        include: [ { by: "attr", value: "id=maincontent" } ],
+        exclude: [],
+        pathPrefix: "www.nhs.uk/medicines/",
+        /* Every medicine page IS a directory path
+           (www.nhs.uk/medicines/aciclovir/), so only the index itself is
+           dropped -- the ManKier rule would empty this archive. */
+        pathExclude: [ /^www\.nhs\.uk\/medicines\/$/ ],
+        docHint: 4096
+    },
+
+    /* CD3WD: development and appropriate-technology manuals converted to
+       HTML. PageContent is the document; PageBody adds the surrounding
+       page by 0.8 of a percent. */
+    cd3wd: {
+        /* The body IS the document. These are converted print manuals:
+           <p>, <h1> and <table> sit directly in <body> with no wrapper
+           and no navigation to exclude. id=PageContent held 62% on the
+           few pages that have it and matched 104 of 13,220. */
+        include: [ { by: "tag", value: "body" } ],
+        exclude: [],
+        pathPrefix: "www.cd3wdproject.org/",
+        pathExclude: [ /\/$/ ],
+        /* TITLES: 56% of these pages carry no <title>, so the importer
+           falls back to the path and a result reads
+           "www.cd3wdproject.org/CD3WD/AGRIC/80362E/B1698.HTM". The text
+           is fine and searchable; only the display is wrong. Fix at the
+           next rebuild by preferring the first <h1>, or the first line
+           of text, over the path. Measured 2026-11-24. */
+        docHint: 16384
+    },
+
+    /* CDC travellers' health, including the Yellow Book. No pathPrefix:
+       the archive spans wwwnc.cdc.gov and www.cdc.gov. What it drops
+       instead is the crawl's off-site captures -- a zimit crawl follows
+       outbound links, and six Medscape pages carrying a WebMD copyright
+       arrived that way. */
+    cdc: {
+        include: [ { by: "attr", value: "id=contentArea" } ],
+        exclude: [],
+        pathExclude: [ /^www\.medscape\.com\//, /^youtube/,
+                       /^onemap\.cdc\.gov\// ],
+        docHint: 16384
+    },
+
     /* All wiki projects: Wikipedia, Wiktionary, Wikisource, Wikibooks,
        Wikiversity, Wikivoyage, Wikiquote, WikiMed. 97-98% of page text.
        Scoping also removes the "This page is issued from ..." licence
@@ -208,13 +275,54 @@ function familyFromScraper(scraper) {
     return s.split(/[\s\/]+/)[0].replace(/-[0-9][0-9a-z.]*$/, "");
 }
 
+/* MediaWiki sites that are not Wikimedia projects. mwoffliner scrapes
+   them, so FAMILIES.mwoffliner's selectors apply unchanged; what differs
+   is the name, which carries a domain instead of a project prefix. The
+   table name is declared here because the wiki branch's
+   /^([a-z]+)_([a-z-]+)_/ cannot parse one containing a dot. */
+var MWSITES = {
+    "archlinux":          "archlinux",
+    "gentoo":             "gentoo",
+    "energypedia":        "energypedia",
+    "gardenology.org":    "gardenology",
+    "proofwiki.org":      "proofwiki",
+    "librepathology":     "librepathology"
+};
+
+/* Sites crawled by zimit/warc2zim. Unlike mwoffliner and sotoki, the
+   scraper cannot name the family here: every one of these reports
+   "warc2zim", because that is the crawler rather than the source. The
+   table name is declared for the same reason MWSITES declares one. */
+var ZIMSITES = {
+    "www.mankier.com":  { family: "mankier", table: "mankier" },
+    "nhs.uk":           { family: "nhs",     table: "nhs_medicines" },
+    "cd3wdproject.org": { family: "cd3wd",   table: "cd3wd" },
+    "wwwnc.cdc.gov":    { family: "cdc",     table: "cdc_travel" }
+};
+
+function zimSite(n) {
+    var m = /^([a-z0-9.\-]+?)_[a-z]{2,3}(-[a-z]+)?_/.exec(String(n));
+    return (m && (m[1] in ZIMSITES)) ? ZIMSITES[m[1]] : null;
+}
+
+/* The site part of an archive name, if it is one of the above:
+   wikivet.net_en_all_maxi_2026-09 -> "wikivet". Lazy, so it stops at the
+   language rather than swallowing it. */
+function mwSite(n) {
+    var m = /^([a-z0-9.\-]+?)_[a-z]{2,3}(-[a-z]+)?_/.exec(String(n));
+    return (m && (m[1] in MWSITES)) ? MWSITES[m[1]] : null;
+}
+
 /* Family from the filename, for callers that have not opened the ZIM.
    Only a fallback: prefer the Scraper key. */
 function familyFromName(n) {
+    if (mwSite(n)) return "mwoffliner";
+    var zs = zimSite(n);
+    if (zs) return zs.family;
     if (/^ifixit_/.test(n)) return "ifixit";
-    if (/stackexchange\.com_|^stackoverflow\.com_|^(askubuntu|superuser|serverfault)\.com_/.test(n))
+    if (/stackexchange\.com_|^stackoverflow\.com_|^(askubuntu|superuser|serverfault)\.com_|^mathoverflow\.net_/.test(n))
         return "sotoki";
-    if (/^(wikipedia|wiktionary|wikisource|wikibooks|wikiversity|wikivoyage|wikiquote|wikimed)_/.test(n))
+    if (/^(wikipedia|wiktionary|wikisource|wikibooks|wikiversity|wikivoyage|wikiquote|wikimed|appropedia)_/.test(n))
         return "mwoffliner";
     if (/^zimgit-/.test(n)) return "nautiluszim";
     if (/^gutenberg_/.test(n)) return "gutenberg2zim";
@@ -233,13 +341,13 @@ function classify(zimName, scraper) {
         return { family: fam, collection: "stackoverflow",
                  table: "stackoverflow", site: null };
 
-    var se = /^(.+?)\.stackexchange\.com_|^(askubuntu|superuser|serverfault)\.com_/.exec(n);
+    var se = /^(.+?)\.stackexchange\.com_|^(askubuntu|superuser|serverfault)\.com_|^(mathoverflow)\.net_/.exec(n);
     if (se) {
         /* A table per site, like gutenberg's per-slice tables: a re-dumped
            site is then replaced by dropping one table rather than by
            deleting rows out of a shared one. Collection, and so Source,
            is unchanged. */
-        var st = String(se[1] || se[2]);
+        var st = String(se[1] || se[2] || se[3]);
         return { family: fam, collection: "stackexchange",
                  table: "stackexchange_" + st.replace(/[^A-Za-z0-9]+/g, "_"),
                  site: st };
@@ -261,7 +369,21 @@ function classify(zimName, scraper) {
                  table: "gutenberg_" + gb[1] + "_" + gb[2],
                  site: "lcc-" + gb[2] };
 
-    var wiki = /^(wikipedia|wiktionary|wikisource|wikibooks|wikiversity|wikivoyage|wikiquote)_/.exec(n);
+    /* A zimit site is decided by name BEFORE anything derived from the
+       scraper is used: fam would be "warc2zim" for all four, which names
+       no family and would skip the archive. */
+    var zs = zimSite(n);
+    if (zs)
+        return { family: zs.family, collection: zs.table, table: zs.table,
+                 site: null };
+
+    /* Declared sites before the parsed ones: collection and table are the
+       same string, as they are for ifixit. */
+    var mws = mwSite(n);
+    if (mws)
+        return { family: fam, collection: mws, table: mws, site: null };
+
+    var wiki = /^(wikipedia|wiktionary|wikisource|wikibooks|wikiversity|wikivoyage|wikiquote|appropedia)_/.exec(n);
     if (wiki) {
         var m = /^([a-z]+)_([a-z-]+)_([a-z0-9]+)/.exec(n);
         var tbl = m ? (m[1] + "_" + m[2] + (m[3] && m[3] !== "all" ? "_" + m[3] : "")) : wiki[1];

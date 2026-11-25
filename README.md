@@ -2,7 +2,7 @@
 
 # alpacaLIPS — a Local Index of Public Sources
 
-An offline library: 51,339,851 documents drawn from 215 public archives,
+An offline library: 51,746,725 documents drawn from 227 public archives,
 plus a rolling window of current news, searched by keyword with no
 network at query time. It answers two kinds of caller from one index:
 
@@ -11,7 +11,7 @@ network at query time. It answers two kinds of caller from one index:
   link to the original page in its own archive.
 
 It is built with [rampart](https://rampart.dev) and its SQL engine, and
-it is sized to run on one machine: the published corpus is 276 GiB
+it is sized to run on one machine: the published corpus is 279 GiB
 installed, and everything in it is publicly available material.
 
 This repository is the **build** side: the scripts that fetch the
@@ -37,8 +37,8 @@ What it costs, as `setup.sh` reports it:
 
 | | download | on disk |
 |---|---|---|
-| **the corpus** — search, the MCP endpoint, the stored page text | 115 GiB | 276 GiB |
-| **the ZIM archives** (optional download) — the original pages, images and tables, read offline | 530 GiB | 530 GiB |
+| **the corpus** — search, the MCP endpoint, the stored page text | 115 GiB | 279 GiB |
+| **the ZIM archives** (optional download) — the original pages, images and tables, read offline | 538 GiB | 538 GiB |
 | **the news window** — a rolling three months, refreshed daily | 70 MiB | 82 MiB |
 | everything | 645 GiB | 806 GiB |
 
@@ -66,17 +66,29 @@ and 2.5 TB of working space.
 | collection | documents | from |
 |---|---:|---|
 | Stack Overflow | 24,145,596 | `stackoverflow.com_en_all` |
-| Wiktionary | 9,086,361 | `wiktionary_en_all_nopic` |
-| Stack Exchange (161 sites) | 8,194,062 | `*.stackexchange.com_en_all` |
-| Wikipedia (incl. medicine) | 7,391,850 | `wikipedia_en_all_maxi` |
+| Wiktionary | 10,478,247 | `wiktionary_en_all_nopic` |
+| Stack Exchange (162 sites) | 8,362,419 | `*.stackexchange.com_en_all`, `mathoverflow.net_en_all` |
+| Wikipedia | 7,318,951 | `wikipedia_en_all_maxi` |
 | Wikisource | 700,131 | `wikisource_en_all_maxi` |
 | iFixit | 103,486 | `ifixit_en_all` |
 | Wikibooks | 102,874 | `wikibooks_en_all_maxi` |
+| ProofWiki | 76,240 | `proofwiki.org_en_all_maxi` |
 | Wikiquote | 73,926 | `wikiquote_en_all_maxi` |
+| Wikipedia (medicine) | 72,899 | `wikipedia_en_medicine_maxi` |
+| ManKier — man pages | 72,055 | `www.mankier.com_en_all` |
 | Project Gutenberg | 60,672 | 39 `gutenberg_en_lcc-*` slices |
-| Wikiversity | 54,279 | `wikiversity_en_all_maxi` |
+| Wikiversity | 54,254 | `wikiversity_en_all_maxi` |
 | Wikivoyage | 34,599 | `wikivoyage_en_all_maxi` |
-| zimgit survival guides | 107 | `zimgit-*` |
+| Gardenology — plant cultivation | 23,015 | `gardenology.org_en_all` |
+| Appropedia — appropriate technology | 22,279 | `appropedia_en_all_maxi` |
+| CD3WD — development and repair manuals | 12,760 | `cd3wdproject.org_en_all` |
+| Gentoo Wiki | 11,726 | `gentoo_en_all_maxi` |
+| Energypedia — off-grid energy | 10,440 | `energypedia_en_all_nopic` |
+| ArchWiki | 4,576 | `archlinux_en_all_maxi` |
+| Libre Pathology | 2,223 | `librepathology_en_all_maxi` |
+| CDC travellers' health | 1,859 | `wwwnc.cdc.gov_en_all` |
+| NHS medicines A to Z | 1,344 | `nhs.uk_en_medicines` |
+| zimgit survival guides | 154 | `zimgit-*` |
 | **news window** | ~2,000 items | Wikipedia current events + the pages they cite |
 
 Everything comes from [Kiwix](https://library.kiwix.org) ZIM archives,
@@ -86,8 +98,8 @@ link to the original page, offline, with its pictures.
 
 ## How it is put together
 
-**One table, one index.** 215 archives land in 51 per-collection tables
-and are then copied into a single `corpus` table with one fulltext index
+**One table, one index.** 227 archives land in 227 staging tables, one
+each, and are then copied into a single `corpus` table with one fulltext index
 over `(Doc, Source)`. Every query is one search over everything, and
 ranking is comparable across collections because it comes from one index.
 
@@ -102,10 +114,10 @@ The corpus therefore ships with keyword ranking only: no model to load at
 query time and no embedding pass over 50M documents.
 
 **The text is stored, the pictures are not.** The corpus table holds the
-plain text of each page — 189 GB of it. Pictures, styling and layout
+plain text of each page — 217 GB of it. Pictures, styling and layout
 stay in the ZIM archives, so every result offers two links: the stored
 text, and the original page in its archive with its pictures intact.
-A corpus-only install is 275 GB; adding the archives is another 530 GB.
+Adding the archives is another 538 GiB.
 The smaller download is not a preview: the text of every document is
 complete, so an answer can still quote its source and cite it. The
 archives add a faithful offline copy of that source — the page as
@@ -190,7 +202,7 @@ moves the corpus database on its own.
 | `meta` | read each archive's own metadata → `notes/zim-meta.json` | minutes |
 | `import` | extract to JSONL and import, archive by archive | ~2 days |
 | `merge` | copy the per-collection tables into `corpus` | ~3 h |
-| `index` | build `corpus_cx`, `corpus_src`, `corpus_ttl` | ~12 h |
+| `index` | build `corpus_Doc_Source_ftx`, `corpus_SrcPath_x`, `corpus_Title_x` | ~12 h |
 | `links` | symlink the imported archives into `zim/`, for kiwix | seconds |
 | `news` | fetch the news window, build its ZIM and its table | ~2 h first run |
 
@@ -290,6 +302,33 @@ tar xzf alpacalips-run.tar.gz
 cd alpacalips
 ./setup.sh
 ```
+
+## Licences
+
+Every source keeps its own terms, and the corpus records them per source
+in `lips_licenses`. A document page shows the licence for the source it
+came from, so a citation link leads to the terms as well as the text.
+
+Two things a bulk download should know, because no page is involved:
+
+- **iFixit's 103,486 repair guides are CC BY-NC-SA 3.0 — non-commercial.**
+  They are a tenth of a per cent of the documents and the only source
+  with that restriction, but the restriction travels with any copy of the
+  corpus.
+- **Ten sources have terms nobody has established.** The five `zimgit`
+  collections are PDFs from several publishers, ManKier is one licence
+  per man page, CD3WD is a compilation of other publishers' manuals, and
+  Energypedia, LibrePathology and Gardenology state nothing we could
+  find. They are marked unverified rather than assumed free.
+
+The rest is Creative Commons (CC BY-SA, mostly 4.0), ArchWiki under GFDL
+1.3, CDC's travel pages in the US public domain, the NHS medicines pages
+under the Open Government Licence v3.0, and Project Gutenberg's texts
+public domain in the United States.
+
+`rampart tools/make-licenses.js --db <db> --list` prints the table, and
+the published `version.txt` carries a `licenses` line counting what is
+recorded, restricted and unverified.
 
 ## Layout
 

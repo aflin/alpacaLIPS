@@ -357,7 +357,7 @@ function termFreq(sql, w) {
     sql.set({ indexAccess: true });
     var rc = null, oc = null, err = null;
     try {
-        sql.exec("select RowCount, OccurrenceCount from corpus_cx where Word = ?;",
+        sql.exec("select RowCount, OccurrenceCount from corpus_Doc_Source_ftx where Word = ?;",
                  [String(w).toLowerCase()], { maxRows: 1 }, function (r) {
             rc = Number(r.RowCount); oc = Number(r.OccurrenceCount);
         });

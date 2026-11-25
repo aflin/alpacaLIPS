@@ -11,10 +11,10 @@
  *              unchanged expression list makes this an optimize, which
  *              folds in rows inserted since the last build; it carries
  *              indexmeter, so progress is visible where `alter index
- *              corpus_cx optimize` shows nothing. Btrees are skipped,
+ *              corpus_Doc_Source_ftx optimize` shows nothing. Btrees are skipped,
  *              since they cannot be re-created in place.
  *     --list   report what SYSINDEX holds and do nothing
- *     --only   act on one index only (corpus_cx | corpus_src | corpus_ttl)
+ *     --only   act on one index only (corpus_Doc_Source_ftx | corpus_SrcPath_x | corpus_Title_x)
  *     --drop   DROP an existing index before creating it. Required to
  *              change a fulltext expression list.
  *
@@ -65,7 +65,7 @@ for (var ai = 2; ai < argv.length; ai++) {
     if (isFinite(num) && num > 0) { MEM = num; break; }
 }
 
-/* The expression list. Changing this REQUIRES --drop on corpus_cx. */
+/* The expression list. Changing this REQUIRES --drop on corpus_Doc_Source_ftx. */
 /* \ualnum not \uword: \uword admits combining marks, so decomposed text
    indexes with the mark attached and never matches a precomposed query.
    Both word expressions must use it or NFD re-enters through the second.
@@ -85,9 +85,10 @@ var EXPRS = "'[\\ualnum]{2,99}', " +
             "'\\bound[CDR]=\\F\\space'";
 
 var WANT = [
-    { name: "corpus_cx",  kind: "fulltext ", on: "Doc, Source", exprs: EXPRS },
-    { name: "corpus_src", kind: "",          on: "SrcPath" },
-    { name: "corpus_ttl", kind: "",          on: "Title" }
+    { name: "corpus_Doc_Source_ftx", kind: "fulltext ", on: "Doc, Source",
+      exprs: EXPRS },
+    { name: "corpus_SrcPath_x",      kind: "",          on: "SrcPath" },
+    { name: "corpus_Title_x",        kind: "",          on: "Title" }
 ];
 
 /* what SYSINDEX holds */
@@ -146,7 +147,7 @@ if (MEM !== null) sql.set({ indexMem: MEM });
    connections can write while it runs -- two lock server requests a row.
    Nothing writes to corpus during a build, so this holds one read lock
    for the whole build instead, which also lets texis read the table with
-   a larger buffer. Only corpus_cx is affected: a btree is always built
+   a larger buffer. Only corpus_Doc_Source_ftx is affected: a btree is always built
    under a continuous read lock whatever this says.
 
    The cost is that the table cannot be written until the build is nearly
@@ -180,7 +181,7 @@ WANT.forEach(function (w) {
        exists, dropping nothing. Per the rules above, a fulltext
        re-create with an unchanged expression list IS an optimize, so
        this folds in rows added since the last build -- and unlike
-       `alter index corpus_cx optimize` it carries indexmeter, so
+       `alter index corpus_Doc_Source_ftx optimize` it carries indexmeter, so
        progress is visible.
 
        It relies on EXPRS being untouched. If the list in this file has

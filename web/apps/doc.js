@@ -30,8 +30,8 @@ var tools = require(WEB + "/lib/tools.js");
    server is noticed rather than served from the old files for ever;
    see the measurements there. Re-resolved per request below. */
 var db = require(WEB + "/lib/db.js");
-var CORPUS_FILES = ["corpus.tbl", "corpus_cx.dat"];
-function corpusReopened() { META = null; tools.corpusReopened(); }
+var CORPUS_FILES = ["corpus.tbl", "corpus_Doc_Source_ftx.dat"];
+function corpusReopened() { META = null; LIC = null; tools.corpusReopened(); }
 function corpus() { return db.open(tools.DB, CORPUS_FILES, corpusReopened); }
 var sql = corpus();
 
@@ -71,6 +71,49 @@ function meta(source, site) {
     }
     return META[source + "\u0000" + (site || "")] ||
            META[source + "\u0000"] || null;
+}
+
+/* Terms per Source, from lips_licenses. A source whose terms are not
+   established is recorded as unverified rather than left blank, so the
+   page can say so instead of implying the content is free to reuse.
+
+   try/catch because a corpus built before the table existed is still a
+   valid corpus: no licence line is better than no page. */
+var LIC = null;
+function license(source) {
+    if (!LIC) {
+        LIC = {};
+        try {
+            sql.exec("select Source, License, Holder, Url, Commercial, Notes"
+                     + " from lips_licenses;", { maxRows: 5000 },
+                     function (r) {
+                LIC[String(r.Source)] = {
+                    license:    String(r.License || ""),
+                    holder:     String(r.Holder || ""),
+                    url:        String(r.Url || ""),
+                    commercial: String(r.Commercial || ""),
+                    notes:      String(r.Notes || "")
+                };
+            });
+        } catch (e) { /* no table: fall through to no licence line */ }
+    }
+    return LIC[String(source)] || null;
+}
+
+/* The licence name links to its text where there is one. A restriction
+   is stated plainly rather than tucked into the notes: non-commercial is
+   the one thing a reader could otherwise get wrong. */
+function licHtml(l) {
+    var name = l.url
+        ? "<a href=\"" + esc(l.url) + "\">" + esc(l.license) + "</a>"
+        : esc(l.license);
+    var who = l.holder ? " &middot; " + esc(l.holder) : "";
+    var warn = "";
+    if (l.commercial === "no")
+        warn = " &middot; <strong>non-commercial use only</strong>";
+    else if (l.commercial === "unknown")
+        warn = " &middot; <strong>terms unverified</strong>";
+    return name + who + warn;
 }
 
 /* Is kiwix-serve answering right now?
@@ -257,8 +300,10 @@ module.exports = function (req) {
       ".note{background:#2a2410;border-color:#4a3f14}}" +
       "</style></head><body>";
 
+    var lic = license(src);
     var hdr = "<header><h1>" + esc(title) + "</h1><dl>" +
       "<dt>collection</dt><dd>" + esc(label) + "</dd>" +
+      (lic ? "<dt>licence</dt><dd>" + licHtml(lic) + "</dd>" : "") +
       "<dt>path</dt><dd>" + esc(path) + "</dd>" +
       "<dt>id</dt><dd>" + esc(id) + "</dd>" +
       (m.zim ? "<dt>archive</dt><dd>" + esc(m.zim) +

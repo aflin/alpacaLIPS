@@ -4,6 +4,8 @@
  *   rampart merge-into-corpus.js --list        # plan only, no writes
  *   rampart merge-into-corpus.js --go
  *   rampart merge-into-corpus.js --go --table gutenberg_en_pd
+ *   rampart merge-into-corpus.js --go --count   # count the rows rather
+ *                                                 than trust the registry
  *
  * WHY A REGISTRY. The first merge left no record of which tables it had
  * copied, so working out what was still outstanding meant comparing
@@ -12,11 +14,11 @@
  * just read it. A table (or a stackexchange Site) already recorded there
  * is skipped: re-running must never double rows.
  *
- * THE FULLTEXT INDEX IS NOT TOUCHED. corpus_cx is a compound index on
+ * THE FULLTEXT INDEX IS NOT TOUCHED. corpus_Doc_Source_ftx is a compound index on
  * (Doc, Source) and inserts do not maintain it -- the new rows are
- * reachable only by linear scan until `alter index corpus_cx optimize`
+ * reachable only by linear scan until `alter index corpus_Doc_Source_ftx optimize`
  * is run, which is long and belongs in its own deliberate step.
- * corpus_src and corpus_ttl DO update per insert.
+ * corpus_SrcPath_x and corpus_Title_x DO update per insert.
  *
  * COLUMN ORDER IS POSITIONAL AND MUST COME FROM ORDINAL_POSITION.
  * `select NAME from SYSCOLUMNS` returns columns in NAME order, which for
@@ -31,6 +33,13 @@
  * ...) select ...` is accepted, returns rowCount 0, raises no error and
  * inserts nothing. Only the positional form writes rows, so the column
  * order above is load-bearing and silent if wrong.
+ *
+ * THIS IS THE ONLY STATEMENT THAT WRITES corpus, which is what lets
+ * corpus_merged serve as a true ledger of the table: Rows comes from the
+ * insert's own rowCount, and sum(Rows) is the corpus row count. That is
+ * why count(*) is not run on every append. Anything else that ever
+ * inserts into corpus has to maintain the ledger too, or the totals
+ * silently drift from the table.
  */
 rampart.globalize(rampart.utils);
 var Sql = require("rampart-sql");
@@ -50,6 +59,11 @@ var GO   = flag("go");
    has the database open. */
 var LOCKING = flag("locking");
 var REBUILD = flag("rebuild");
+/* COUNTING THE CORPUS IS A FULL SCAN: no index survives a rebuild, so
+   count(*) reads every row of a 215 GiB table, twice, for two report
+   lines. corpus_merged records Rows per unit and is the cheap source;
+   --count reads the table instead and checks the two agree. */
+var COUNT = flag("count");
 var ONE  = arg("table", null);
 var sql  = new Sql.init(DB, true);
 if (!LOCKING) {
@@ -197,7 +211,7 @@ if (REBUILD) {
         /* The indexes go with it: they describe rows that are about to
            stop existing, and the index stage rebuilds them from the new
            corpus. */
-        ["corpus_cx", "corpus_src", "corpus_ttl"].forEach(function (ix) {
+        ["corpus_Doc_Source_ftx", "corpus_SrcPath_x", "corpus_Title_x"].forEach(function (ix) {
             try { sql.exec("drop index " + ix + ";");
                   printf("  dropped index %s\n", ix); } catch (e) {}
         });
@@ -246,7 +260,19 @@ sql.exec("select TableName, Site, Imported from lips_sources;",
 var ORDER = ["wikipedia_en", "wikipedia_en_medicine", "wikisource_en",
              "gutenberg", "wikibooks_en", "wikiversity_en",
              "wikiquote_en", "wikivoyage_en", "wiktionary_en",
-             "stackexchange", "stackoverflow", "ifixit", "zimgit"];
+             "stackexchange", "stackoverflow", "ifixit", "zimgit",
+             /* Appended 2026-11-24 in the order they actually went in, so
+                a rebuild reproduces this corpus instead of re-deriving an
+                order. They sit at the end because that is where an
+                unlisted Source lands, not because it was argued for:
+                archlinux and gentoo carry the densest text in the corpus
+                and losing every tie to a stub is the wrong outcome. Move
+                them deliberately, and only with a rebuild. */
+             "appropedia_en", "archlinux", "energypedia", "gardenology",
+             "gentoo", "librepathology", "proofwiki",
+             "stackexchange_mathoverflow",
+             /* Appended 2026-11-24, the first zimit crawls in the corpus. */
+             "cd3wd", "cdc_travel", "mankier", "nhs_medicines"];
 
 function orderOf(t) {
     var i = ORDER.indexOf(sourceFor(t));
@@ -337,11 +363,24 @@ if (!tableExists("corpus")) {
     printf("created table corpus\n");
 }
 
-var before = 0;
-sql.exec("select count(*) c from corpus;", { maxRows: 1 },
-         function (r) { before = Number(r.c); });
+function corpusRows() {
+    var n = 0;
+    sql.exec("select count(*) c from corpus;", { maxRows: 1 },
+             function (r) { n = Number(r.c); });
+    return n;
+}
+/* Summed here rather than with sum(): 215-odd rows, and it keeps the
+   query to the plainest form the dialect supports. */
+function registryRows() {
+    var n = 0;
+    sql.exec("select Rows from corpus_merged;", { maxRows: 5000 },
+             function (r) { n += Number(r.Rows) || 0; });
+    return n;
+}
+var before = COUNT ? corpusRows() : registryRows();
 printf("\ninsertion order: quality descending (DESIGN.md §2)\n");
-printf("corpus before: %d rows\n", before);
+printf("corpus before: %d rows%s\n", before,
+       COUNT ? " (counted)" : " (from corpus_merged; --count to count)");
 printf("to insert:     %d rows in %d units\n", total, plan.length);
 printf("corpus after:  %d rows\n", before + total);
 
@@ -352,7 +391,7 @@ if (!GO) {
 
 /* ---- insert ---------------------------------------------------------- */
 printf("\ninserting...\n");
-var t0 = Date.now(), ins = 0;
+var t0 = Date.now(), ins = 0, shortfall = 0;
 plan.forEach(function (p) {
     var p0 = Date.now();
     /* LITERALS, not parameters, inside convert(): a bound ? is typed int
@@ -373,29 +412,57 @@ plan.forEach(function (p) {
               "convert('" + p.src + "','varchar'), Site, SrcPath, Title, " +
               "Doc, Nbytes, convert('','varchar') from " + p.t;
     if (p.site) sel += " where Site = '" + p.site + "'";
+    var got = 0;
     try {
-        sql.exec(sel + ";");
+        var res = sql.exec(sel + ";");
+        got = Number(res && res.rowCount) || 0;
     } catch (e) {
         printf("  FAILED %-22s %s\n", p.t, e.message.split("\n")[0]);
         return;
     }
+    /* WHAT WENT IN, NOT WHAT WAS PLANNED. p.n is a count of the source
+       table (per Site where one applies), so the two agree exactly when
+       the insert did what it said. Recording p.n instead left the ledger
+       agreeing with itself whatever the engine wrote. */
+    if (got !== p.n) {
+        printf("  MISMATCH %-22s inserted %d of %d planned\n", p.t, got, p.n);
+        shortfall++;
+    }
     sql.exec("insert into corpus_merged (TableName, Site, Source, Rows, " +
              "Merged) values (?,?,?,?,?);",
-             [p.t, p.site || "", p.src, p.n,
+             [p.t, p.site || "", p.src, got,
               dateFmt("%Y-%m-%dT%H:%M:%S", new Date())]);
-    ins += p.n;
-    printf("  %-22s %-18s %8d rows  %.1f s\n", p.t, p.site || "", p.n,
+    ins += got;
+    printf("  %-22s %-18s %8d rows  %.1f s\n", p.t, p.site || "", got,
            (Date.now() - p0) / 1000);
     fflush(stdout);
 });
 
-var after = 0;
-sql.exec("select count(*) c from corpus;", { maxRows: 1 },
-         function (r) { after = Number(r.c); });
+var after = COUNT ? corpusRows() : before + ins;
 printf("\ncorpus: %d -> %d rows (+%d, expected +%d) in %.1f min\n",
        before, after, after - before, ins, (Date.now() - t0) / 60000);
-if (after - before !== ins)
-    printf("MISMATCH: inserted count differs from plan -- investigate "
-           + "before running the index optimize.\n");
+if (COUNT) {
+    /* The counted delta against what the engine reported inserting: the
+       one check that tests rowCount itself rather than trusting it. */
+    if (after - before !== ins)
+        printf("MISMATCH: the table gained %d rows where the inserts "
+               + "reported %d. rowCount cannot be trusted here -- do not "
+               + "index until this is understood.\n", after - before, ins);
+    else
+        printf("Verified: the table gained exactly what the inserts "
+               + "reported.\n");
+} else {
+    printf("Totals are from corpus_merged, which now records each "
+           + "insert's own rowCount. --count reads the table and checks "
+           + "those reports against it.\n");
+}
 printf("\nfulltext index NOT updated. New rows are found by linear scan "
-       + "until:\n  alter index corpus_cx optimize;\n");
+       + "until:\n  alter index corpus_Doc_Source_ftx optimize;\n");
+
+if (shortfall) {
+    printf("\n%d unit(s) inserted fewer rows than planned. corpus_merged "
+           + "records\nwhat actually went in, so the totals above are "
+           + "real -- but something is\nwrong. Do not build the index "
+           + "until it is understood.\n", shortfall);
+    process.exit(3);
+}

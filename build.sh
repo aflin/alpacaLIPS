@@ -21,8 +21,17 @@
 #            archives through JSONL, then the 5 PDF collections (~2 days)
 #   merge    copy the per-collection tables into `corpus` (~35 min;
 #            it runs with noLocking, which needs rampart 0.7.6)
-#   index    build corpus_cx, corpus_src, corpus_ttl (~13 h measured at
-#            51.3M rows; corpus_cx is nearly all of it)
+#   index    build corpus_Doc_Source_ftx, corpus_SrcPath_x, corpus_Title_x.
+#            4h 49m at 51.7M rows on a 504 GiB machine: the fulltext index
+#            4h 29m (3205 rows/s) and the two btrees 10 min each, so the
+#            fulltext is nearly all of it.
+#            THE TIME DEPENDS ON MEMORY, not on the row count alone. That
+#            run held ~102 GiB resident -- about 2 GiB per million rows --
+#            and built in a single pass with no intermediate merge. Below
+#            roughly 100 GiB of indexMem this corpus spills and merges in
+#            cycles instead, and merge I/O rather than tokenising sets the
+#            pace; expect substantially longer. Check the memory before
+#            trusting any duration.
 #   links    put the imported archives in zim/, for kiwix to serve
 #   kiwix    kiwix-tools into zim/bin, and library.xml built from zim/
 #   news     the rolling news window: pages, ZIM, table (~2 h first
@@ -431,9 +440,9 @@ stage_import() {
     [ "$n" -gt 0 ] || { echo "  nothing left to import"; return 0; }
     confirm "import runs $n archive(s) and takes about two days." || return 0
 
-    # --no-index: mkindex would fulltext-index every staging table, for
-    # indexes the merge then discards. The corpus gets its own.
-    run bash "$LIPS/tools/run-import.sh" --db "$DB" --no-index \
+    # The staging tables are not indexed: the merge scans each one once
+    # and the index that matters is the one on corpus.
+    run bash "$LIPS/tools/run-import.sh" --db "$DB" \
         $(grep -v '^#' "$WL") || die "run-import.sh failed"
 
     pdf_pass || die "the PDF import failed"
@@ -528,7 +537,7 @@ stage_index() {
     local have miss hits
     have=$(rampart "$LIPS/tools/corpus-index.js" --db "$DB" --list 2>/dev/null)
     miss=""
-    for ix in corpus_cx corpus_src corpus_ttl; do
+    for ix in corpus_Doc_Source_ftx corpus_SrcPath_x corpus_Title_x; do
         printf '%s' "$have" | grep -q "$ix" || miss="$miss $ix"
     done
     [ -z "$miss" ] || die "missing after the build:$miss"
@@ -665,7 +674,7 @@ stage_news() {
     # already holds that page. Through the SrcPath btree those are
     # lookups; without it each one scans 200 GB, and a cold window asks
     # 7,000 times. Refuse rather than crawl.
-    [ -f "$DB/corpus_src.btr" ] \
+    [ -f "$DB/corpus_SrcPath_x.btr" ] \
         || die "the news stage needs the SrcPath index: run ./build.sh index first"
     have zimwriterfs || die "zimwriterfs not found (zim-tools); the news ZIM needs it"
     STATE=$LIPS/build/news-src/cache/state.json
