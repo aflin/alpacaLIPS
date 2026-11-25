@@ -110,6 +110,11 @@ HERE=$LIPS
 # and lives in tools/rampart-find.sh: an install needs neither feature,
 # and a 0.7.6 build writes byte-identical index files.
 MIN_RAMPART=${MIN_RAMPART:-0.7.6}
+# Which payloads `package` builds; --only sets it in the loop below, so
+# this has to be above the loop. It was below it, which meant --only was
+# parsed and then cleared, and `package --only runtime` quietly built
+# everything.
+PKG_ONLY=""
 
 JOBS=4
 MEM=70
@@ -221,7 +226,6 @@ DOWNLOAD_DIR=${DOWNLOAD_DIR:-}
 # 230 GiB to produce 115. With no download directory configured there is
 # nowhere to serve from, so it falls back to the tree.
 PAYLOADS=${DOWNLOAD_DIR:-$LIPS/downloads/alpacalips}
-PKG_ONLY=""      # --only runtime,news,... ; empty means all
 
 export LIPS DATA META KIWIX STAGE DB DOWNLOAD_DIR
 

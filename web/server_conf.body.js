@@ -156,8 +156,18 @@ var KIWIX = "http://127.0.0.1:8098";
  * in particular is taken, so our own search endpoint stays at
  * /apps/search.json.
  */
+/* Each entry is mapped as its own route, so a top-level file kiwix
+   serves needs naming explicitly: "/viewer" does not cover
+   "/viewer_settings.js", whose absence renders the viewer blank -- the
+   page and every other asset load, and viewer.js then has nothing to
+   configure itself from. /nojs is the no-JavaScript viewer.
+
+   /favicon.ico and /robots.txt are deliberately NOT here: kiwix answers
+   them, but they belong to whatever is at this server's root, which is
+   this application. */
 var KIWIX_PATHS = ["/content/", "/skin/", "/catalog/", "/raw/",
-                   "/viewer", "/search", "/suggest", "/random"];
+                   "/viewer", "/viewer_settings.js", "/nojs",
+                   "/search", "/suggest", "/random"];
 
 /* Hosted payloads: the prebuilt corpus, the runtime tarball and
  * optionally the archives, served as plain static files.

@@ -9,7 +9,29 @@
 #                              install has archives). Asks nothing, so it
 #                              is what a daily cron entry runs; exits 0
 #                              without downloading when already current.
-#   ./setup.sh --check         verify what is already here, download nothing
+#   ./setup.sh --check         report what is out of date -- runtime, corpus,
+#                              news, archives -- and ask about each. Downloads
+#                              nothing on its own, and nothing at all without
+#                              a terminal
+#   ./setup.sh --upgrade       replace the program files with the published
+#                              release and stop. Touches no data
+#   ./setup.sh --replace-corpus  fetch the published corpus over the one here
+#   ./setup.sh --no-news       leave the news window alone
+#   ./setup.sh --keep-parts    keep every downloaded corpus part instead of
+#                              deleting each as it is unpacked: a retry costs
+#                              nothing, but it needs far more free space
+#   ./setup.sh --accept-license  answer kiwix-tools' licence prompt
+#   ./setup.sh -y              assume yes; with --check, install what is behind
+#   ./setup.sh --force         with --upgrade, replace the program files even
+#                              if they are already the published release
+#   ./setup.sh --delete-first  only when the disk has no room for both: delete
+#                              the corpus that is here to make space for the one
+#                              being fetched. There is no corpus until the new
+#                              one finishes, so -y does not imply this
+#   ./setup.sh --check -y      the same, but install whatever is behind. A
+#                              runtime upgrade happens first and the script
+#                              then re-runs itself, so the rest is checked by
+#                              the new release
 #   ./setup.sh --own-rampart   install rampart into ./rampart even if the
 #                              machine already has a usable one
 #   ./setup.sh --no-rampart    do not look for or install rampart
@@ -47,7 +69,7 @@
 # settles on is recorded in alpacalips.conf, and servers.sh reads it.
 #
 # No build tools are needed: the corpus arrives prebuilt, because
-# building it is ~12 hours of indexing plus a few hundred GB of source
+# building it is hours of indexing plus a few hundred GB of source
 # archives. Everything lands under DATA, and the server finds it through
 # confData in web/server_conf.js -- the code stays where you unpacked it.
 set -u
@@ -58,6 +80,18 @@ DATA=${DATA:-$HERE/build}
 WANT_ARCHIVES=0
 WANT_KIWIX=0
 CHECK_ONLY=0
+# -y/--yes, or LIPS_YES=1 in the environment. The environment form is
+# what a re-exec uses: an older setup.sh ignores an unknown variable,
+# where an unknown FLAG makes it exit with "unknown option".
+YES=0
+[ "${LIPS_YES:-0}" = "1" ] && YES=1
+# --delete-first: when the disk holds the corpus being replaced and not
+# much else, remove it to make room. Deliberately NOT implied by -y.
+DELETE_FIRST=0
+[ "${LIPS_DELETE_FIRST:-0}" = "1" ] && DELETE_FIRST=1
+# --force: re-install the runtime even when the published hash is the one
+# already recorded, for files that have been damaged.
+FORCE=0
 KEEP_PARTS=0
 WANT_UPGRADE=0   # --upgrade: take the published runtime and stop
 CHOSE=0          # did the command line already say what to install?
@@ -69,6 +103,10 @@ WANT_RAMPART=1
 WANT_NEWS=0
 NEWS_SET=0       # did --news or --no-news decide it, rather than the prompt?
 CHECK_FLAG=0      # --check was given, as opposed to "nothing" in the menu
+# --news also sets CHECK_FLAG, to skip the prompts and leave the config
+# alone. The currency report must NOT key off that, or the daily cron
+# entry reports instead of updating the news.
+CHECK_REPORT=0    # the currency report: --check only
 CITE_SET=""
 BIND_SET=""
 PORT_SET=""
@@ -79,7 +117,10 @@ while [ $# -gt 0 ]; do
         --corpus)   WANT_CORPUS=1; CHOSE=1; shift ;;
         --archives) WANT_ARCHIVES=1; CHOSE=1; shift ;;
         --kiwix)    WANT_KIWIX=1; CHOSE=1; shift ;;
-        --check)    CHECK_ONLY=1; CHECK_FLAG=1; CHOSE=1; shift ;;
+        --check)    CHECK_ONLY=1; CHECK_FLAG=1; CHECK_REPORT=1; CHOSE=1; shift ;;
+        -y|--yes)   YES=1; shift ;;
+        --delete-first) DELETE_FIRST=1; shift ;;
+        --force)    FORCE=1; shift ;;
         --news)     WANT_NEWS=1; NEWS_SET=1; CHOSE=1; CHECK_FLAG=1; shift ;;
         --no-news)  WANT_NEWS=0; NEWS_SET=1; shift ;;
         --base-url) CITE_SET="$2"; shift 2 ;;
@@ -91,7 +132,11 @@ while [ $# -gt 0 ]; do
         --keep-parts) KEEP_PARTS=1; shift ;;
         --accept-license) ACCEPT_LIC=1; shift ;;
         --replace-corpus) REPLACE_CORPUS=1; WANT_CORPUS=1; CHOSE=1; shift ;;
-        -h|--help)  sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        # The WHOLE header, not a line range: a fixed range silently
+        # hides whatever is added past it, which is how --check and
+        # --delete-first became invisible the moment they were documented.
+        -h|--help)  awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next }
+                         NR > 1 { exit }' "$0"; exit 0 ;;
         *) echo "unknown option $1" >&2; exit 1 ;;
     esac
 done
@@ -483,11 +528,9 @@ ver_newer() {
     ver_remote || return 1
     _rv=$(ver_field "$VER_REMOTE" version)
     _rs=$(ver_field "$VER_REMOTE" runtime_sha256)
-    _rd=$(ver_field "$VER_REMOTE" corpus_documents)
     _lt=$(ver_local 2>/dev/null) || _lt=""
     _lv=$(ver_field "${_lt:-}" version)
     _ls=$(ver_field "${_lt:-}" runtime_sha256)
-    _ld=$(ver_field "${_lt:-}" corpus_documents)
     [ -n "$_rs" ] || return 1
     if [ -z "$_lt" ]; then
         VER_WHY="this install has no recorded version"
@@ -497,10 +540,10 @@ ver_newer() {
         VER_WHY="the runtime changed (published $_rv, installed ${_lv:-unknown})"
         return 0
     fi
-    if [ -n "$_rd" ] && [ -n "$_ld" ] && [ "$_rd" != "$_ld" ]; then
-        VER_WHY="the corpus changed ($_ld documents here, $_rd published)"
-        return 0
-    fi
+    # The CORPUS is not judged here. version.txt is a copy of a
+    # published file, so its corpus_documents says what was published
+    # when the runtime was last stamped -- not what this install holds.
+    # That lives in $DATA/corpus/.installed.version, and --check reads it.
     return 1
 }
 
@@ -513,6 +556,17 @@ do_upgrade() {
     say "published" "${_rv:-unknown}"
     _lt=$(ver_local 2>/dev/null) || _lt=""
     [ -n "$_lt" ] && say "installed" "$(ver_field "$_lt" version)"
+    # Nothing to do when the published hash is the one already recorded
+    # here. Replacing identical files and announcing an upgrade to the
+    # release you were on is worse than useless: it looks like something
+    # happened. --force is for an install whose files are damaged, where
+    # the recorded hash no longer describes what is on disk.
+    if [ "$FORCE" -eq 0 ] && [ -n "$_rs" ] \
+       && [ "$_rs" = "$(ver_field "${_lt:-}" runtime_sha256)" ]; then
+        say "" "already on ${_rv:-this release}; nothing to do"
+        say "" "--force replaces the program files anyway"
+        return 0
+    fi
 
     _ud=$HERE/.upgrade.$$
     rm -rf "$_ud"; mkdir -p "$_ud" || return 1
@@ -561,8 +615,14 @@ do_upgrade() {
     done
     echo
     say "upgraded to" "${_rv:-unknown}"
-    echo "  re-run ./setup.sh to continue: this script was one of the files"
-    echo "  replaced, and a shell reads a script as it goes."
+    # Two callers, two endings. --upgrade stops here, so say what was and
+    # was not done: "re-run to continue" reads as though the run failed.
+    # --check passes "continuing" -- it re-execs the new script itself and
+    # announces that -- so this says nothing.
+    if [ "${1:-}" != "continuing" ]; then
+        echo "  the program files only; the corpus, news and archives were"
+        echo "  not touched. ./setup.sh --check says whether they are behind."
+    fi
     return 0
 }
 
@@ -928,8 +988,8 @@ fi
 # the first byte is fetched.
 if [ "$NEWS_SET" -eq 0 ]; then
     if [ -f "$DATA/news/news.tbl" ]; then
-        # Already installed: refresh it without asking. This is also the
-        # path the daily cron run takes.
+        # Already installed: refresh it without asking. The daily cron
+        # entry passes --news, which sets NEWS_SET and skips this.
         WANT_NEWS=1
     elif [ "${CHECK_ONLY:-0}" -eq 1 ]; then
         WANT_NEWS=0
@@ -1074,11 +1134,178 @@ else
     esac
 fi
 
+# ---- what is out of date (--check) ---------------------------------
+# Each test uses the same identity the installer verifies, so a thing
+# already here is never fetched again.
+NEED_RUNTIME=0; NEED_CORPUS=0; NEED_NEWS=0; NEED_ARCH=0
+if [ "$CHECK_REPORT" -eq 1 ]; then
+    echo
+    echo "current?"
+
+    # The runtime by its hash, not its version string: the hash is what
+    # do_upgrade checks the download against.
+    if ver_remote; then
+        _prs=$(ver_field "$VER_REMOTE" runtime_sha256)
+        _pv=$(ver_field "$VER_REMOTE" version)
+        _lv=""; _lrs=""
+        if _lt=$(ver_local 2>/dev/null); then
+            _lv=$(ver_field "$_lt" version)
+            _lrs=$(ver_field "$_lt" runtime_sha256)
+        fi
+        if [ -z "$_lrs" ]; then
+            say "runtime" "no version recorded here; $_pv published"
+            NEED_RUNTIME=1
+        elif [ "$_lrs" != "$_prs" ]; then
+            say "runtime" "${_lv:-unknown} here, $_pv published"
+            NEED_RUNTIME=1
+        else
+            say "runtime" "${_lv:-unknown}, current"
+        fi
+    else
+        say "runtime" "cannot read $BASE/version.txt"
+    fi
+
+    # THE RUNTIME GOES FIRST, and the rest is judged by the new script.
+    # A release can change what the other checks even mean -- the
+    # manifest format, a version.txt field, what payloads exist -- so an
+    # old script's reading of them is not worth acting on. exec, not a
+    # function call: a fresh process reads the replaced setup.sh from the
+    # start, which is the hazard do_upgrade warns about.
+    if [ "$NEED_RUNTIME" -eq 1 ]; then
+        _dort=0
+        if [ "$YES" -eq 1 ]; then
+            _dort=1
+        elif [ -t 0 ]; then
+            printf "  upgrade the runtime first? [Y/n]: "
+            read -r _a || _a=""
+            case "$_a" in [Nn]*) _dort=0 ;; *) _dort=1 ;; esac
+        fi
+        if [ "$_dort" -eq 1 ]; then
+            echo
+            do_upgrade continuing || exit 1
+            if [ -z "${LIPS_RECHECK:-}" ]; then
+                echo
+                say "re-checking" "with the new setup.sh"
+                echo
+                LIPS_RECHECK=1 LIPS_YES="$YES" BASE="$BASE" DATA="$DATA" \
+                    exec "$HERE/setup.sh" --check
+            fi
+            # Already re-run once and still behind: say so rather than
+            # loop on a hash that will not match.
+            echo
+            say "" "runtime replaced; re-run ./setup.sh --check for the rest"
+            exit 0
+        fi
+    fi
+
+    # The corpus by manifest_sha256, which is what identifies a payload.
+    _pcv=$(curl -fsL --max-time 60 "$BASE/corpus/VERSION" 2>/dev/null)
+    _pcs=$(printf '%s' "$_pcv" | awk '/^manifest_sha256/{print $2}')
+    _pcd=$(printf '%s' "$_pcv" | awk '/^documents/{print $2}')
+    if [ ! -f "$DATA/corpus/corpus.tbl" ]; then
+        say "corpus" "not installed; ${_pcd:-?} documents published"
+        NEED_CORPUS=1
+    elif [ -z "$_pcs" ]; then
+        say "corpus" "published version unknown -- leaving yours alone"
+    else
+        _ics=""
+        [ -f "$DATA/corpus/.installed.version" ] && _ics=$(awk \
+            '/^manifest_sha256/{print $2}' \
+            "$DATA/corpus/.installed.version" 2>/dev/null)
+        if [ -z "$_ics" ]; then
+            say "corpus" "installed before versions were recorded"
+            NEED_CORPUS=1
+        elif [ "$_ics" != "$_pcs" ]; then
+            say "corpus" "a newer corpus is published (${_pcd:-?} documents)"
+            NEED_CORPUS=1
+        else
+            say "corpus" "current"
+        fi
+    fi
+
+    # The news by its tarball's sha, the same comparison the news stage
+    # makes before deciding to download.
+    if news_remote; then
+        _nt=$(echo "$NMF" | awk '$1 ~ /^news\.tar\./ { print $1; exit }')
+        if [ -n "$_nt" ]; then
+            _pns=$(curl -fsL --max-time 60 "$BASE/news/$_nt.sha256" 2>/dev/null \
+                   | tr -dc '0-9a-f')
+            _ins=$(cat "$DATA/news/.installed.sha" 2>/dev/null | tr -dc '0-9a-f')
+            if [ -z "$_ins" ]; then
+                say "news" "not installed"
+                NEED_NEWS=1
+            elif [ "$_pns" != "$_ins" ]; then
+                say "news" "a newer window is published"
+                NEED_NEWS=1
+            else
+                say "news" "current"
+            fi
+        fi
+    fi
+
+    # The archives per file by size. archives_want() totals only what is
+    # missing or the wrong length, so an install that has them all reads
+    # zero and is told so.
+    if [ "$NZIM" -gt 0 ] && archives_remote; then
+        _aw=$(archives_want)
+        if [ "${_aw:-0}" -gt 0 ] 2>/dev/null; then
+            say "archives" "$NZIM here, $(hum "$_aw") still to fetch"
+            NEED_ARCH=1
+        else
+            say "archives" "$NZIM, current"
+        fi
+    elif [ "$NZIM" -eq 0 ]; then
+        say "archives" "not installed (optional; ./setup.sh --archives)"
+    fi
+
+    _need=$((NEED_CORPUS + NEED_NEWS + NEED_ARCH))
+    echo
+    if [ "$_need" -eq 0 ]; then
+        # The runtime is handled above. If it was declined, saying
+        # everything is current would be untrue.
+        if [ "$NEED_RUNTIME" -eq 1 ]; then
+            say "" "the runtime is behind; everything else is current"
+        else
+            say "" "everything is current"
+        fi
+        exit 0
+    fi
+    if [ "$YES" -eq 0 ] && [ ! -t 0 ]; then
+        say "" "$_need item(s) behind; --check -y installs them"
+        exit 0
+    fi
+
+    # Ask, or take -y for granted. The flags set here are the ones the
+    # ordinary flow below acts on, so nothing is reimplemented.
+    _offer() {   # _offer <prompt>  -> 0 to do it
+        [ "$YES" -eq 1 ] && return 0
+        printf "  %s [Y/n]: " "$1"
+        read -r _a || _a=""
+        case "$_a" in [Nn]*) return 1 ;; *) return 0 ;; esac
+    }
+    [ "$NEED_CORPUS" -eq 1 ] && _offer "fetch the corpus?" \
+        && { WANT_CORPUS=1; REPLACE_CORPUS=1; }
+    [ "$NEED_ARCH" -eq 1 ] && _offer "fetch the missing archives?" \
+        && WANT_ARCHIVES=1
+    [ "$NEED_NEWS" -eq 1 ] && _offer "update the news window?" \
+        && WANT_NEWS=1
+
+    if [ "$WANT_CORPUS$WANT_ARCHIVES$WANT_NEWS" = "000" ]; then
+        say "" "nothing chosen"
+        exit 0
+    fi
+    CHECK_ONLY=0     # there is work to do, so fall through and do it
+    echo
+fi
+
 # ---- write the server config ----------------------------------------
 # The answers above become plain variables at the top of
 # web/server_conf.js. Nothing is passed in the environment, because on
 # macOS the launchd plist that daemonizes the server drops it.
-if [ "$CHECK_FLAG" -eq 0 ]; then
+#
+# Also when --check fell through to install into a tree that has no
+# config yet: a corpus with no server_conf.js cannot be served.
+if [ "$CHECK_FLAG" -eq 0 ] || [ ! -f "$WEB/server_conf.js" ]; then
     BIND_ADDR=$(bind_list "$BIND") || exit 1
     if write_server_conf "$BIND_ADDR" "$PORT" "$CITE" "$DATA" "$HERE/zim"; then
         say "wrote" "web/server_conf.js"
@@ -1249,7 +1476,8 @@ fi
 # A corpus is already here: is it the one being served? VERSION is a few
 # hundred bytes, so this costs nothing and answers the question the old
 # presence test could not.
-if [ -f "$DATA/corpus/corpus.tbl" ] && [ "$CHECK_ONLY" -eq 0 ]; then
+if [ -f "$DATA/corpus/corpus.tbl" ] && [ "$CHECK_ONLY" -eq 0 ] \
+   && [ "$CHECK_REPORT" -eq 0 ]; then
     PV=$(curl -fsL --max-time 60 "$BASE/corpus/VERSION" 2>/dev/null)
     IV=""
     [ -f "$DATA/corpus/.installed.version" ] \
@@ -1282,6 +1510,11 @@ if [ "$WANT_CORPUS" -eq 1 ] \
    && { [ ! -f "$DATA/corpus/corpus.tbl" ] || [ "$REPLACE_CORPUS" -eq 1 ]; }; then
     echo
     echo "fetching the corpus (this is the big one)"
+    # Said wherever a replacement happens, not only in the status block
+    # above which --check skips: a half-replaced database is new tables
+    # against old indexes.
+    [ -f "$DATA/corpus/corpus.tbl" ] \
+        && say "note" "stop the server first if it is running: ./servers.sh stop"
     mkdir -p "$DATA"
     corpus_remote || true
     PARTS=$(echo "$MF" | awk '{print $1}')
@@ -1314,6 +1547,60 @@ if [ "$WANT_CORPUS" -eq 1 ] \
         [ "$HAVEP" -gt 0 ] && say "already fetched" "$(hum "$HAVEP") in $PDIR"
         say "extracts to" "$(hum "$EXTRACTED")"
         say "need / free" "$(hum "$NEED") / $(hum "$FREE")"
+        # Would it fit if the corpus already here were removed? Its own
+        # bytes are the ones in the way, so this is the common case on a
+        # disk sized for one corpus.
+        HAVE_SZ=0
+        [ -d "$DATA/corpus" ] && HAVE_SZ=$(du -sb "$DATA/corpus" 2>/dev/null | cut -f1)
+        HAVE_SZ=${HAVE_SZ:-0}
+        if [ "$NEED" -gt "$FREE" ] && [ "$HAVE_SZ" -gt 0 ] \
+           && [ "$NEED" -le $((FREE + HAVE_SZ)) ]; then
+            echo
+            say "space" "$(hum "$NEED") needed, $(hum "$FREE") free"
+            say "" "the corpus here is $(hum "$HAVE_SZ"); deleting it would make room"
+            _dofree=0
+            if [ "$DELETE_FIRST" -eq 1 ]; then
+                _dofree=1
+            elif [ -t 0 ] && [ "$YES" -eq 0 ]; then
+                echo
+                echo "  Deleting it first is the only way to fit on this disk."
+                echo "  You would have NO corpus until the new one finishes:"
+                echo "  if the download fails you would start again from nothing."
+                printf "  delete the corpus here and fetch the new one? [y/N]: "
+                read -r _a || _a=""
+                case "$_a" in [Yy]*) _dofree=1 ;; esac
+            else
+                # -y is not consent to this; say so and name the flag.
+                echo >&2
+                echo "NOT ENOUGH SPACE in $DATA: need $(hum "$NEED"), have $(hum "$FREE")." >&2
+                echo "It fits if the corpus here ($(hum "$HAVE_SZ")) is deleted first." >&2
+                echo "That leaves no corpus until the download finishes, so -y does" >&2
+                echo "not do it: pass --delete-first to accept that." >&2
+                exit 1
+            fi
+            if [ "$_dofree" -eq 1 ]; then
+                # Check the source BEFORE deleting anything: a removed
+                # corpus and an unreachable server is the worst outcome,
+                # and one request rules it out.
+                # PARTS is one name per line: take the FIRST, not the
+                # first field of every line.
+                _p0=$(echo "$PARTS" | awk 'NR == 1 { print $1; exit }')
+                if ! curl -fsI --max-time 60 "$BASE/corpus/$_p0" >/dev/null 2>&1; then
+                    echo >&2
+                    echo "cannot reach $BASE/corpus/$_p0 -- nothing deleted." >&2
+                    exit 1
+                fi
+                say "source" "reachable; deleting the corpus here"
+                rm -rf "$DATA/corpus" || { echo "could not delete it" >&2; exit 1; }
+                FREE=$(freebytes "$DATA")
+                say "free now" "$(hum "$FREE")"
+                if [ "$NEED" -gt "$FREE" ]; then
+                    echo >&2
+                    echo "still not enough: need $(hum "$NEED"), have $(hum "$FREE")." >&2
+                    exit 1
+                fi
+            fi
+        fi
         if [ "$NEED" -gt "$FREE" ]; then
             echo >&2
             echo "NOT ENOUGH SPACE in $DATA: need $(hum "$NEED"), have $(hum "$FREE")." >&2
@@ -1606,12 +1893,17 @@ fi
 # What this install is now on, for the next run to compare against.
 # Written at the end so a failed or interrupted run does not claim a
 # version it did not finish installing.
-if [ -n "${VER_REMOTE:-}" ]; then
-    printf '%s\n' "$VER_REMOTE" > "$HERE/version.txt" 2>/dev/null \
-        && say "version" "$(ver_field "$VER_REMOTE" version)"
-elif ver_remote; then
-    printf '%s\n' "$VER_REMOTE" > "$HERE/version.txt" 2>/dev/null \
-        && say "version" "$(ver_field "$VER_REMOTE" version)"
+# ONLY on a fresh install. do_upgrade writes this when it actually
+# replaces the program files; writing it after a --corpus or --news run
+# would claim a release whose files were never fetched, and --upgrade
+# would then refuse to fetch them ("already on X"). A tree with no
+# version.txt was just unpacked from this BASE, so the published one
+# does describe it.
+if [ ! -f "$HERE/version.txt" ]; then
+    if [ -n "${VER_REMOTE:-}" ] || ver_remote; then
+        printf '%s\n' "$VER_REMOTE" > "$HERE/version.txt" 2>/dev/null \
+            && say "version" "$(ver_field "$VER_REMOTE" version)"
+    fi
 fi
 
 # Content terms vary by source and some of them restrict reuse, which a
@@ -1629,4 +1921,5 @@ fi
 
 echo "then open http://$CITE_HOST:$PORT/  (MCP at /apps/mcp.json)"
 [ "$WANT_KIWIX" -eq 1 ] && echo "  kiwix:  bash $HERE/tools/zim-serve.sh start"
+
 exit 0
