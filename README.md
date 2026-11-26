@@ -230,8 +230,10 @@ decision from building:
 | `copy` | publish payloads built elsewhere to `--download-dir` | minutes |
 
 `corpus` is separate from `package` because it is the only expensive one:
-it builds into `corpus-new/`, then renames `corpus/` to `corpus-old/` and
-`corpus-new/` to `corpus/`, so what is served is always a complete
+it writes `corpus-YYYY-MM-DD/` under its final name and then puts that
+name in `corpus-current.txt`, which is the publish. Nothing is renamed
+or deleted, so a download already running is unaffected, and what is
+served is always a complete
 payload and the previous one can be put back.
 
 **Re-running a stage is how you resume one.** Nothing repeats work: a

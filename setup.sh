@@ -35,6 +35,10 @@
 #   ./setup.sh --own-rampart   install rampart into ./rampart even if the
 #                              machine already has a usable one
 #   ./setup.sh --no-rampart    do not look for or install rampart
+#   ./setup.sh --corpus-dir D  fetch payload D (corpus-YYYY-MM-DD) instead of
+#                              the published current one. Payloads stay up for
+#                              a week, so this pins an install to one, or puts
+#                              the previous one back, with nothing republished
 #   ./setup.sh --base-url URL  set the citation host without being asked
 #                              ("-" means use each client's own host)
 #   ./setup.sh --bind LIST     listen on LIST, a comma separated set of
@@ -98,6 +102,10 @@ CHOSE=0          # did the command line already say what to install?
 WANT_CORPUS=0    # set by --corpus, or below when no selector was given
 ACCEPT_LIC=0     # --accept-license, passed through to setup-kiwix.sh
 REPLACE_CORPUS=0 # --replace-corpus: fetch a newer corpus over the one here
+# --corpus-dir: install a named payload instead of the current one. Old
+# payloads stay published for a week, so this is how an install pins to
+# one, or goes back to the previous one without waiting for a republish.
+CORPUS_DIR_OPT=${LIPS_CORPUS_DIR:-}
 OWN_RAMPART=0
 WANT_RAMPART=1
 WANT_NEWS=0
@@ -132,6 +140,7 @@ while [ $# -gt 0 ]; do
         --keep-parts) KEEP_PARTS=1; shift ;;
         --accept-license) ACCEPT_LIC=1; shift ;;
         --replace-corpus) REPLACE_CORPUS=1; WANT_CORPUS=1; CHOSE=1; shift ;;
+        --corpus-dir) CORPUS_DIR_OPT=${2:-}; shift 2 ;;
         # The WHOLE header, not a line range: a fixed range silently
         # hides whatever is added past it, which is how --check and
         # --delete-first became invisible the moment they were documented.
@@ -467,9 +476,11 @@ fetch_spread() {   # fetch_spread <out> <bytes> <url> [<url> ...]
             _u=$(spread_url $(( _k % _nu )) "$@")
             spread_get "$_o.c.$_j" "$_from" "$_to" "$_u" &
             _cpids="$_cpids $!"
+            DL_CHUNK_PIDS=$_cpids        # so dl_stop can reach this wave
             _j=$((_j + 1)); _k=$((_k + 1))
         done
         for _cp in $_cpids; do wait "$_cp" 2>/dev/null; done
+        DL_CHUNK_PIDS=""
         _i=0
         while [ "$_i" -lt "$_j" ]; do
             _from=$(( _pos + _i * _ch ))
@@ -556,6 +567,16 @@ do_upgrade() {
     say "published" "${_rv:-unknown}"
     _lt=$(ver_local 2>/dev/null) || _lt=""
     [ -n "$_lt" ] && say "installed" "$(ver_field "$_lt" version)"
+    # Same number, different build: without this the output is "published
+    # 0.1.11, installed 0.1.11" followed by files being replaced, which
+    # reads as either nothing happening or something pointless happening.
+    # The hashes are what actually differ, so show them.
+    _lvn=$(ver_field "${_lt:-}" version)
+    _lsh=$(ver_field "${_lt:-}" runtime_sha256)
+    if [ -n "$_lt" ] && [ "$_lvn" = "$_rv" ] && [ -n "$_rs" ] \
+       && [ "$_rs" != "$_lsh" ]; then
+        say "" "same version, rebuilt: $(printf '%.12s' "${_lsh:-none}") -> $(printf '%.12s' "$_rs")"
+    fi
     # Nothing to do when the published hash is the one already recorded
     # here. Replacing identical files and announcing an upgrade to the
     # release you were on is worse than useless: it looks like something
@@ -582,6 +603,18 @@ do_upgrade() {
         if [ -z "$_got" ]; then
             rm -rf "$_ud"
             echo "cannot verify the download on this system" >&2; return 1
+        fi
+        if [ "$_got" != "$_rs" ]; then
+            # version.txt and the tarball are separate cache entries that
+            # expire independently, so just after a publish this pair can
+            # be one release apart. Ask again with a query string no cache
+            # has seen before calling it a bad download.
+            say "" "hash mismatch; refetching past any cache"
+            if curl -fsL --max-time 300 \
+                    "$BASE/alpacalips-run.tar.gz?nocache=$$-$(date +%s 2>/dev/null)" \
+                    -o "$_ud/run.tar.gz" 2>/dev/null; then
+                _got=$(sha256_of "$_ud/run.tar.gz")
+            fi
         fi
         if [ "$_got" != "$_rs" ]; then
             rm -rf "$_ud"
@@ -642,6 +675,9 @@ fbytes() {  # fbytes <file>
 # One self-updating line for the download in flight: which file of how
 # many, how far in, how fast, how much longer.
 PROG_PID=""
+# The chunk fetchers of the wave in flight. dl_stop kills these; see the
+# comment there about why a backgrounded job never sees the terminal's ^C.
+DL_CHUNK_PIDS=""
 progress_start() {  # progress_start <file> <bytes> <label>
     PROG_FILE=$1; PROG_WANT=${2:-0}; PROG_LABEL=$3
     if [ ! -t 2 ]; then
@@ -728,6 +764,17 @@ dl_stop() {
         BG_PID=""
     fi
     [ -n "${XPID:-}" ] && kill "$XPID" 2>/dev/null
+    # The overlapped archive hash, backgrounded and therefore immune to
+    # the terminal's ^C in the same way the progress loop was.
+    if [ -n "${AVPID:-}" ]; then kill "$AVPID" 2>/dev/null; AVPID=""; fi
+    # The wave of range requests, and the curl under each: eight
+    # subshells that ^C passes by, which left an 8 GB archive still
+    # downloading after the script had exited.
+    for _p in ${DL_CHUNK_PIDS:-}; do
+        pkill -P "$_p" 2>/dev/null || true
+        kill "$_p" 2>/dev/null || true
+    done
+    DL_CHUNK_PIDS=""
     pkill -P $$ curl 2>/dev/null || true         # a foreground transfer
     [ -n "${FIFO:-}" ] && rm -f "$FIFO"
     # Chunk parts are left where they are: .part holds every whole chunk
@@ -778,10 +825,72 @@ verify() {  # verify <file> <sha256url>
 # The published manifests, fetched at most once each: the menu quotes
 # them and the download blocks reuse them.
 MF=""; EXTRACTED=""; AMF=""
+
+# WHICH PAYLOAD THIS RUN USES, decided once. The corpus lives in a dated
+# directory -- corpus-2026-11-25/ -- and corpus-current.txt names the
+# current one. Nothing is ever renamed, so a download already running
+# keeps working across a publish; resolving once is what extends that to
+# a download running inside THIS script.
+CPATH=""
+# Strict, because the name arrives over the network and goes into a URL.
+corpus_dir_ok() {
+    case "$1" in
+        corpus-2[0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]) return 0 ;;
+        corpus-2[0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]-[0-9]) return 0 ;;
+        corpus-2[0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]-[0-9][0-9]) return 0 ;;
+    esac
+    return 1
+}
+corpus_path() {
+    [ -n "$CPATH" ] && return 0
+    local started=""
+    [ -f "$DATA/.parts/.from" ] \
+        && started=$(cat "$DATA/.parts/.from" 2>/dev/null | tr -d " \t\r")
+    # An explicit choice wins, including over a download in progress.
+    if [ -n "$CORPUS_DIR_OPT" ]; then
+        if ! corpus_dir_ok "$CORPUS_DIR_OPT"; then
+            echo "--corpus-dir: not a payload directory name: $CORPUS_DIR_OPT" >&2
+            return 1
+        fi
+        CPATH=$CORPUS_DIR_OPT
+        say "corpus payload" "$CPATH (asked for)"
+        return 0
+    fi
+    # Finish the payload an interrupted run started, while it is still
+    # published: its parts are on disk and parts do not mix.
+    if [ -n "$started" ] && corpus_dir_ok "$started" \
+       && curl -fsIL --max-time 60 "$BASE/$started/MANIFEST" >/dev/null 2>&1; then
+        CPATH=$started
+        say "corpus payload" "$CPATH (finishing the one already started)"
+        return 0
+    fi
+    CPATH=$(curl -fsL --max-time 60 "$BASE/corpus-current.txt" 2>/dev/null \
+                | head -1 | tr -d " \t\r")
+    if [ -z "$CPATH" ]; then
+        echo "cannot read $BASE/corpus-current.txt, which names the current" >&2
+        echo "corpus payload. Choose one with --corpus-dir corpus-YYYY-MM-DD." >&2
+        return 1
+    fi
+    if ! corpus_dir_ok "$CPATH"; then
+        echo "corpus-current.txt does not name a payload directory: $CPATH" >&2
+        CPATH=""
+        return 1
+    fi
+    if [ -n "$started" ] && [ "$started" != "$CPATH" ]; then
+        say "corpus payload" "$CPATH"
+        say "" "the payload you started ($started) is no longer published"
+        say "" "its parts cannot be mixed with this one and will be refetched"
+    else
+        say "corpus payload" "$CPATH"
+    fi
+    return 0
+}
+
 corpus_remote() {
     [ -n "$MF" ] && return 0
-    MF=$(curl -fsL --max-time 120 "$BASE/corpus/MANIFEST" 2>/dev/null)
-    EXTRACTED=$(curl -fsL --max-time 60 "$BASE/corpus/EXTRACTED" 2>/dev/null | tr -dc 0-9)
+    corpus_path || return 1
+    MF=$(curl -fsL --max-time 120 "$BASE/$CPATH/MANIFEST" 2>/dev/null)
+    EXTRACTED=$(curl -fsL --max-time 60 "$BASE/$CPATH/EXTRACTED" 2>/dev/null | tr -dc 0-9)
     [ -n "$MF" ]
 }
 NMF=""
@@ -1199,7 +1308,10 @@ if [ "$CHECK_REPORT" -eq 1 ]; then
     fi
 
     # The corpus by manifest_sha256, which is what identifies a payload.
-    _pcv=$(curl -fsL --max-time 60 "$BASE/corpus/VERSION" 2>/dev/null)
+    corpus_path 2>/dev/null || true
+    _pcv=""
+    [ -n "$CPATH" ] \
+        && _pcv=$(curl -fsL --max-time 60 "$BASE/$CPATH/VERSION" 2>/dev/null)
     _pcs=$(printf '%s' "$_pcv" | awk '/^manifest_sha256/{print $2}')
     _pcd=$(printf '%s' "$_pcv" | awk '/^documents/{print $2}')
     if [ ! -f "$DATA/corpus/corpus.tbl" ]; then
@@ -1478,7 +1590,10 @@ fi
 # presence test could not.
 if [ -f "$DATA/corpus/corpus.tbl" ] && [ "$CHECK_ONLY" -eq 0 ] \
    && [ "$CHECK_REPORT" -eq 0 ]; then
-    PV=$(curl -fsL --max-time 60 "$BASE/corpus/VERSION" 2>/dev/null)
+    corpus_path 2>/dev/null || true
+    PV=""
+    [ -n "$CPATH" ] \
+        && PV=$(curl -fsL --max-time 60 "$BASE/$CPATH/VERSION" 2>/dev/null)
     IV=""
     [ -f "$DATA/corpus/.installed.version" ] \
         && IV=$(cat "$DATA/corpus/.installed.version" 2>/dev/null)
@@ -1518,12 +1633,29 @@ if [ "$WANT_CORPUS" -eq 1 ] \
     mkdir -p "$DATA"
     corpus_remote || true
     PARTS=$(echo "$MF" | awk '{print $1}')
-    [ -n "$PARTS" ] || { echo "no corpus MANIFEST at $BASE/corpus/" >&2; exit 1; }
+    [ -n "$PARTS" ] || { echo "no corpus MANIFEST at $BASE/${CPATH:-?}/" >&2; exit 1; }
 
     # Parts land in their own directory: when the payload tars the
     # database files at top level, the post-unpack move globs corpus*,
     # which would otherwise sweep corpus.tar.zst.part-* into corpus/.
     PDIR=$DATA/.parts
+    # WHICH PAYLOAD THESE PARTS BELONG TO. Parts are split at exactly
+    # 5 GiB, so every part but the last is the same size in every
+    # payload and the "already here" size check cannot tell them apart.
+    # Parts left from a payload that is no longer the target are
+    # therefore unusable, and saying so beats a gzip CRC error 100 GB in.
+    mkdir -p "$PDIR"
+    _from=""
+    [ -f "$PDIR/.from" ] && _from=$(cat "$PDIR/.from" 2>/dev/null | tr -d " \t\r")
+    if [ -n "$_from" ] && [ "$_from" != "$CPATH" ]; then
+        say "parts" "left over from $_from, which is not what this run fetches"
+        for _sp in "$PDIR"/corpus.tar.*part-*; do
+            [ -f "$_sp" ] || continue
+            say "discarding" "$(basename "$_sp") ($(du -h "$_sp" 2>/dev/null | cut -f1))"
+            rm -f "$_sp"
+        done
+    fi
+    printf '%s\n' "$CPATH" > "$PDIR/.from"
 
     # Check the disk BEFORE starting, not 200 GB in. Two numbers matter:
     # what the extracted corpus needs, and the transient on top of it --
@@ -1585,9 +1717,12 @@ if [ "$WANT_CORPUS" -eq 1 ] \
                 # PARTS is one name per line: take the FIRST, not the
                 # first field of every line.
                 _p0=$(echo "$PARTS" | awk 'NR == 1 { print $1; exit }')
-                if ! curl -fsI --max-time 60 "$BASE/corpus/$_p0" >/dev/null 2>&1; then
+                # -L: a redirecting mirror returns 3xx, which -f counts as
+                # success, so without it this checks the redirector rather
+                # than the object -- and then deletes the corpus.
+                if ! curl -fsIL --max-time 60 "$BASE/$CPATH/$_p0" >/dev/null 2>&1; then
                     echo >&2
-                    echo "cannot reach $BASE/corpus/$_p0 -- nothing deleted." >&2
+                    echo "cannot reach $BASE/$CPATH/$_p0 -- nothing deleted." >&2
                     exit 1
                 fi
                 say "source" "reachable; deleting the corpus here"
@@ -1655,10 +1790,10 @@ if [ "$WANT_CORPUS" -eq 1 ] \
             fi
             KN=$(echo "$PARTS" | wc -w | tr -d ' '); KI=$((${KI:-0} + 1))
             progress_start "$PDIR/$part" "${want:-0}" "Downloading $KI of $KN"
-            fetch "$BASE/corpus/$part" "$PDIR/$part" "$want" || { progress_stop
+            fetch "$BASE/$CPATH/$part" "$PDIR/$part" "$want" || { progress_stop
                 echo "failed: $part" >&2; exit 1; }
             progress_stop
-            verify "$PDIR/$part" "$BASE/corpus/$part.sha256" || exit 1
+            verify "$PDIR/$part" "$BASE/$CPATH/$part.sha256" || exit 1
         done
         echo "unpacking"
         ORDERED=""
@@ -1693,7 +1828,7 @@ if [ "$WANT_CORPUS" -eq 1 ] \
                 fi
                 rm -f "$PDIR/.ok.$1"
                 ( exec >&2
-                  fetch "$BASE/corpus/$1" "$PDIR/$1" "$pwant" \
+                  fetch "$BASE/$CPATH/$1" "$PDIR/$1" "$pwant" \
                       && : > "$PDIR/.ok.$1" ) &
                 BG_PID=$!
                 progress_start "$PDIR/$1" "${pwant:-0}" "Downloading $2 of $3"
@@ -1716,7 +1851,7 @@ if [ "$WANT_CORPUS" -eq 1 ] \
                 fi
                 # Quiet while it matches: a line per part would scroll the
                 # progress line away. A mismatch prints and stops the run.
-                vout=$(verify "$PDIR/$1" "$BASE/corpus/$1.sha256" 2>&1) || {
+                vout=$(verify "$PDIR/$1" "$BASE/$CPATH/$1.sha256" 2>&1) || {
                     printf '%s\n' "$vout" >&2; return 1; }
             }
 
@@ -1754,14 +1889,21 @@ if [ "$WANT_CORPUS" -eq 1 ] \
     # The payload tars the database files directly, so land them in corpus/.
     if [ -f "$DATA/corpus.tbl" ] && [ ! -f "$DATA/corpus/corpus.tbl" ]; then
         mkdir -p "$DATA/corpus"
-        mv "$DATA"/corpus* "$DATA"/lips_sources* "$DATA"/SYS*.tbl \
+        # lips_* rather than lips_sources*: lips_licenses.tbl was being
+        # extracted and then left here, so the reader pages reported no
+        # terms for every source. Parts are in .parts/, so none of these
+        # globs can reach them.
+        mv "$DATA"/corpus* "$DATA"/lips_* "$DATA"/SYS*.tbl \
            "$DATA/corpus/" 2>/dev/null
     fi
     rm -rf "$PDIR"
     rm -f "${XLOG:-}"
     # What this install now holds, for the comparison on the next run.
-    curl -fsL --max-time 60 "$BASE/corpus/VERSION" \
+    curl -fsL --max-time 60 "$BASE/$CPATH/VERSION" \
         > "$DATA/corpus/.installed.version" 2>/dev/null || true
+    # Which dated payload this came from, so --check can say what it is
+    # comparing against and a later run can ask for the same one again.
+    printf 'corpus_dir %s\n' "$CPATH" >> "$DATA/corpus/.installed.version"
     say "corpus" "unpacked to $DATA/corpus ($(du -sh "$DATA/corpus" 2>/dev/null | cut -f1))"
 fi
 
@@ -1815,7 +1957,11 @@ if [ "$WANT_ARCHIVES" -eq 1 ]; then
         wait "$AVPID" 2>/dev/null || true
         AVPID=""
     }
-    echo "$AMF" | { while read -r f sz rest; do
+    # A here-document, NOT `echo | while`: the right side of a pipeline is
+    # a subshell, and progress_start's pid would be set there while the
+    # INT trap that has to kill it runs in this shell. That is how ^C came
+    # to leave the progress line redrawing over the shell prompt.
+    while read -r f sz rest; do
         [ -n "$f" ] || continue
         AIDX=$((AIDX+1))
         have=$(fsize "$HERE/zim/$f"); have=${have:--1}
@@ -1870,10 +2016,12 @@ if [ "$WANT_ARCHIVES" -eq 1 ]; then
             ( verify "$HERE/zim/$f" "$BASE/archives/$f.sha256" || true ) &
             AVPID=$!
         fi
-    done
-    # Inside the pipeline's subshell, where AVPID was set: the last
-    # archive's hash is still running at this point.
-    archive_hash_wait; }
+    done <<ARCHIVE_MANIFEST
+$AMF
+ARCHIVE_MANIFEST
+    # The last archive's hash is still running at this point. AVPID is
+    # this shell's now, not a subshell's, so the trap can reach it too.
+    archive_hash_wait
 fi
 
 if [ "$WANT_NEWS" -eq 1 ] && [ -f "$DATA/news/news.tbl" ]; then

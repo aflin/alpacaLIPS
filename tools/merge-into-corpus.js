@@ -356,11 +356,22 @@ work.forEach(function (w) {
    every later insert depends on. varchar(4096) on Doc is the size hint
    the importer uses, not a limit. */
 if (!tableExists("corpus")) {
+    /* Doc IS COMPRESSED. Measured over a proportional million rows of
+       all 227 collections: 2.28x smaller, which takes an install from
+       278.9 to 165.2 GiB. The fulltext index is unaffected -- byte for
+       byte identical, because it indexes the text and not the storage --
+       and reading a document costs ~0.4 ms more here, ~1.1 ms on a Pi:
+       about 1% of a real query. The insert phase pays 2.03x, once.
+
+       The level is set, not inherited: -1 is zlib's default (6) and what
+       that 2.28x was measured at. Level 9 bought 0.16% for 13.5% more
+       time. A moving default would quietly change a published payload. */
+    sql.set({ blobzCompressLevel: -1 });
     sql.exec("create table corpus (" +
              "Id counter, Source varchar(32), Site varchar(64), " +
              "SrcPath varchar(512), Title varchar(256), " +
-             "Doc varchar(4096), Nbytes int, Sha varchar(64));");
-    printf("created table corpus\n");
+             "Doc blobz, Nbytes int, Sha varchar(64));");
+    printf("created table corpus (Doc blobz, level -1)\n");
 }
 
 function corpusRows() {

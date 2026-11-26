@@ -115,7 +115,9 @@ fi
 if command -v pv >/dev/null 2>&1; then PVBIN=pv; else PVBIN=""; fi
 progress() { if [ -n "$PVBIN" ]; then pv -s "$1" -N "$2"; else cat; fi; }
 
-mkdir -p "$STAGE/corpus" "$STAGE/kiwix" "$STAGE/archives"
+# No corpus/ here: each pack makes its own dated directory, and an
+# empty one beside them is a directory nothing maintains.
+mkdir -p "$STAGE/kiwix" "$STAGE/archives"
 echo "staging : $STAGE"
 echo "compress: $COMP (.$EXT), parts of $PART"
 [ -n "$PVBIN" ] || echo "note    : pv not found, no progress bar"
@@ -156,10 +158,13 @@ if [ "$DO_RUNTIME" -eq 1 ]; then
         RELVER=$(head -1 "$LIPS/VERSION" 2>/dev/null | tr -d ' \t')
         [ -n "$RELVER" ] || RELVER=0.0.0
         RSHA=$(awk '{print $1}' "$T.sha256" 2>/dev/null)
-        CDOC=$(awk '$1 == "documents" { print $2 }' \
-                   "$STAGE/corpus/VERSION" 2>/dev/null)
-        CPACK=$(awk '$1 == "packed" { print $2 }' \
-                    "$STAGE/corpus/VERSION" 2>/dev/null)
+        # Read through the pointer, which is the only thing that knows
+        # which dated payload is current. Blank when nothing is
+        # published yet, which both lines below already tolerate.
+        CCUR=$(cat "$STAGE/corpus-current.txt" 2>/dev/null)
+        CVER=$STAGE/$CCUR/VERSION
+        CDOC=$(awk '$1 == "documents" { print $2 }' "$CVER" 2>/dev/null)
+        CPACK=$(awk '$1 == "packed" { print $2 }' "$CVER" 2>/dev/null)
         # Terms per source, counted from lips_licenses rather than kept
         # in step by hand. Absent on a corpus built before that table.
         CLIC=$(rampart "$LIPS/tools/make-licenses.js" --db "$DB" --summary \
@@ -168,9 +173,19 @@ if [ "$DO_RUNTIME" -eq 1 ]; then
             printf 'version %s\n' "$RELVER"
             printf 'packed %s\n'  "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
             printf 'runtime_sha256 %s\n' "${RSHA:-unknown}"
-            [ -n "${CDOC:-}" ]  && printf 'corpus_documents %s\n' "$CDOC"
-            [ -n "${CPACK:-}" ] && printf 'corpus_packed %s\n' "$CPACK"
-            [ -n "${CLIC:-}" ]  && printf 'licenses %s\n' "$CLIC"
+            if [ -n "${CDOC:-}" ];  then printf 'corpus_documents %s\n' "$CDOC"; fi
+            if [ -n "${CPACK:-}" ]; then printf 'corpus_packed %s\n' "$CPACK"; fi
+            if [ -n "${CLIC:-}" ];  then printf 'licenses %s\n' "$CLIC"; fi
+            # Informational, for a human reading this file: it says which
+            # dated payload was current when the runtime was packed.
+            # setup.sh resolves corpus-current.txt instead, because this
+            # copy goes stale if the corpus is republished on its own.
+            if [ -n "${CCUR:-}" ];  then printf 'corpus_dir %s\n' "$CCUR"; fi
+            # The block's status is the last command's, and the lines
+            # above are all optional: ending on one of them meant an
+            # absent licence summary skipped the mv below and left the
+            # previous version.txt in place, stale, beside a new runtime.
+            true
         } > "$STAGE/version.txt.tmp" \
           && mv -f "$STAGE/version.txt.tmp" "$STAGE/version.txt"
         say "version.txt" "$(awk '$1 == "version" { print $2 }' \
@@ -255,37 +270,66 @@ if [ "$DO_CORPUS" -eq 1 ]; then
     # corpus_Doc_Source_ftx* not corpus_Doc_Source_ftx.*: the delta tiers are corpus_Doc_Source_ftx_D.btr,
     # corpus_Doc_Source_ftx_T.btr and corpus_Doc_Source_ftx_P.tbl -- underscore, not dot, so a
     # dot glob silently drops them.
-    # lips_sources and corpus_merged are NOT optional: the app reads them
-    # for the collection list, the tiers and every citation URL, and
-    # without them a search dies with "No such table: lips_sources".
-    FILES=$(ls -1 corpus.tbl corpus_Doc_Source_ftx* corpus_SrcPath_x.btr corpus_Title_x.btr \
-                  lips_sources* corpus_merged* SYS*.tbl 2>/dev/null)
+    # lips_sources, corpus_merged and lips_licenses are NOT optional: the
+    # app reads them for the collection list, the tiers, every citation
+    # URL, and the licence shown on each reader page. Without the first a
+    # search dies with "No such table: lips_sources"; without the last
+    # every reader page quietly shows no terms at all.
+    #
+    # corpus.blb is where a blobz Doc keeps the text, out of line, and it
+    # is most of the payload. A corpus packaged without it hashes
+    # correctly, unpacks cleanly, and then fails on the first query with
+    # "No such table: corpus", because the table cannot open.
+    FILES=$(ls -1 corpus.tbl corpus.blb corpus_Doc_Source_ftx* \
+                  corpus_SrcPath_x.btr corpus_Title_x.btr \
+                  lips_sources* corpus_merged* lips_licenses* SYS*.tbl 2>/dev/null)
     [ -n "$FILES" ] || { echo "no corpus files in $DB" >&2; exit 1; }
+    # An explicit list is clear about what ships, and its cost is a file
+    # type nobody thought of -- which is exactly how corpus.blb came to
+    # be left out. So anything else belonging to a table this payload
+    # ships stops the pack rather than going missing quietly.
+    _fl=" $(echo $FILES) "
+    for f in corpus.* lips_sources.* lips_licenses.* corpus_merged.*; do
+        [ -e "$f" ] || continue
+        case "$_fl" in *" $f "*) continue ;; esac
+        echo >&2
+        echo "$DB/$f belongs to a table this payload ships, and it is not" >&2
+        echo "in the file list. Add it to FILES in tools/make-payloads.sh" >&2
+        echo "rather than publishing a corpus missing part of a table." >&2
+        exit 1
+    done
     TOT=$(du -cb $FILES | tail -1 | cut -f1)
     say "files" "$(echo "$FILES" | wc -l)"
     say "raw size" "$(human "$TOT")"
-    say "parts" "$(basename "$STAGE")/corpus/corpus.$EXT.part-*"
+    # DATED, AND WRITTEN UNDER ITS FINAL NAME. Publishing renames and
+    # deletes nothing: R2 has no directory rename (it would copy every
+    # part to a new key), and a rename moves files out from under anyone
+    # mid-download, which is what corpus/ -> corpus-old/ used to do to a
+    # client between parts. A second pack on the same day takes the next
+    # free name rather than overwriting a payload someone may be
+    # fetching. corpus-current.txt, written last, is the publish.
+    CDIR=$STAGE/corpus-$(date -u '+%Y-%m-%d')
+    if [ -e "$CDIR" ]; then
+        _n=2
+        while [ -e "$CDIR-$_n" ]; do _n=$((_n + 1)); done
+        CDIR=$CDIR-$_n
+    fi
+    say "parts" "$(basename "$CDIR")/corpus.$EXT.part-*"
     if [ "$DRY" -eq 1 ]; then
         echo "$FILES" | sed 's/^/      /'
     else
-        # BUILT BESIDE THE LIVE PAYLOAD, SWAPPED IN AT THE END, because
-        # this writes into the directory the web server publishes.
-        # Deleting first leaves the download unusable until the rebuild
-        # finishes. Same filesystem, so the swap is a rename.
-        CDEST=$STAGE/corpus
-        CNEW=$STAGE/corpus-new
-        rm -rf "$CNEW"; mkdir -p "$CNEW" || exit 1
+        mkdir -p "$CDIR" || exit 1
         tar -cf - $FILES \
           | progress "$TOT" "corpus" \
           | $CFILT \
           | split -b "$PART" -d -a 3 --additional-suffix="" \
-                  - "$CNEW/corpus.$EXT.part-"
+                  - "$CDIR/corpus.$EXT.part-"
         # MANIFEST is "<name> <bytes>", matching the archives one, so a
         # client can sum it and check free space BEFORE starting a 112 GB
         # download. Written to a temp file and renamed: hashing 112 GB
         # takes minutes, and a half-written MANIFEST read by setup.sh
         # would silently fetch a partial corpus.
-        ( cd "$CNEW" && for f in corpus.$EXT.part-*; do
+        ( cd "$CDIR" && for f in corpus.$EXT.part-*; do
               case "$f" in *.sha256) continue ;; esac
               sha256sum "$f" | awk '{print $1}' > "$f.sha256"
               printf '%s %s\n' "$f" "$(stat -c %s "$f")"
@@ -294,7 +338,7 @@ if [ "$DO_CORPUS" -eq 1 ]; then
         # one it holds is the one being served. The MANIFEST's sha covers
         # every part name and size, so any repack changes it; the figures
         # beside it are what makes a difference worth acting on legible.
-        ( cd "$CNEW" && {
+        ( cd "$CDIR" && {
               printf 'manifest_sha256 %s\n' \
                   "$(sha256sum MANIFEST | awk '{print $1}')"
               printf 'packed %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -306,33 +350,82 @@ if [ "$DO_CORPUS" -eq 1 ]; then
                   } catch (e) {}' 2>/dev/null
           } > VERSION.tmp && mv -f VERSION.tmp VERSION )
         say "version" "$(awk '/^manifest_sha256/{print substr($2,1,16)}' \
-                         "$CNEW/VERSION")"
+                         "$CDIR/VERSION")"
         # The uncompressed total, so the client can also check that the
         # EXTRACTED corpus will fit, not just the download.
-        echo "$TOT" > "$CNEW/EXTRACTED"
+        echo "$TOT" > "$CDIR/EXTRACTED"
         # Count MANIFEST lines, not the glob: corpus.*.part-* also matches
         # the .sha256 files written beside each part and doubles the count.
-        say "built" "$(wc -l < "$CNEW/MANIFEST") parts, $(du -sh "$CNEW" | cut -f1)"
+        say "built" "$(wc -l < "$CDIR/MANIFEST") parts, $(du -sh "$CDIR" | cut -f1)"
     fi
     echo
-    # Semi-atomic swap. Three renames on one filesystem, in an order
-    # that never leaves corpus/ missing or half-written:
-    #   corpus-old/ removed if a previous rollback copy is still there
-    #   corpus/     becomes corpus-old/
-    #   corpus-new/ becomes corpus/
-    # The previous payload stays as corpus-old/ -- 115 GiB kept on
-    # purpose, so a bad build can be put back by two renames.
-    if [ "$DRY" -eq 0 ] && [ -d "$CNEW" ]; then
-        COLD=$STAGE/corpus-old
-        [ -d "$COLD" ] && { rm -rf "$COLD" || exit 1; }
-        if [ -d "$CDEST" ]; then
-            mv -f "$CDEST" "$COLD" || exit 1
+    # THE PUBLISH: one small file naming the directory that is finished.
+    # Written last and replaced atomically, so a reader sees either the
+    # old payload or the new one, never a directory still being filled.
+    # Rolling back is putting the previous name back in this file; the
+    # payload it names is still there, because nothing is deleted here.
+    if [ "$DRY" -eq 0 ] && [ -d "$CDIR" ]; then
+        CPTR=$STAGE/corpus-current.txt
+        PREV=$(cat "$CPTR" 2>/dev/null)
+        CBASE=$(basename "$CDIR")
+        printf '%s\n' "$CBASE" > "$CPTR.tmp" || exit 1
+        mv -f "$CPTR.tmp" "$CPTR" || exit 1
+        say "published" "$CBASE  (named in corpus-current.txt)"
+        if [ -n "$PREV" ] && [ "$PREV" != "$CBASE" ]; then
+            say "rollback" "put $PREV back in corpus-current.txt"
         fi
-        mv -f "$CNEW" "$CDEST" || exit 1
-        say "published" "corpus/ swapped in"
-        [ -d "$COLD" ] && say "rollback" "the previous payload is in corpus-old/"
+        # RECLAIM. The new payload and the one it replaced are kept
+        # whatever their age -- the second is the rollback, and a
+        # rollback is wanted most once the new one has been up long
+        # enough to be found wanting. Everything else goes at a week.
+        #
+        # A week is safe because of what the payload is: 1000 Gbit, so
+        # still downloading it after seven days needs a line slower than
+        # 1.7 Mbit/s sustained throughout. The window is really for the
+        # stop-start case, since setup.sh resumes and someone may take a
+        # few parts an evening.
+        KEEP_DAYS=${LIPS_KEEP_DAYS:-7}
+        if [ "${LIPS_KEEP_ALL:-0}" = "1" ]; then
+            say "keeping all" "LIPS_KEEP_ALL=1: nothing pruned"
+        else
+            _gone=0
+            for _d in "$STAGE"/corpus-2???-??-??*; do
+                [ -d "$_d" ] || continue
+                _b=$(basename "$_d")
+                # Never the current one, never the rollback.
+                [ "$_b" = "$CBASE" ] && continue
+                [ -n "$PREV" ] && [ "$_b" = "$PREV" ] && continue
+                # Younger than the window: someone may still be on it.
+                if [ -n "$(find "$_d" -maxdepth 0 -mtime -"$KEEP_DAYS" 2>/dev/null)" ]; then
+                    continue
+                fi
+                say "pruning" "$_b ($(du -sh "$_d" 2>/dev/null | cut -f1), older than $KEEP_DAYS days)"
+                rm -rf "$_d" || exit 1
+                _gone=$((_gone + 1))
+            done
+            [ "$_gone" -gt 0 ] && say "pruned" "$_gone old payloads"
+        fi
+        _kept=$(ls -1d "$STAGE"/corpus-2???-??-??* 2>/dev/null | wc -l)
+        say "kept" "$_kept dated payloads, $(du -shc "$STAGE"/corpus-2???-??-??* 2>/dev/null | tail -1 | cut -f1) total"
     fi
 fi
+
+# ------------------------------------------------------- the listing
+# A public bucket answers GET on known paths and nothing else, so the
+# file listing is published as an object. Rewritten on every pack so it
+# cannot describe the previous one.
+index_html() {
+    [ "$DRY" -eq 1 ] && return 0
+    [ -f "$STAGE/corpus-current.txt" ] || return 0
+    if [ -n "${LIPS_PUBLIC_BASE:-}" ]; then
+        rampart "$LIPS/tools/make-download-index.js" --stage "$STAGE" \
+            --public "$LIPS_PUBLIC_BASE" >/dev/null 2>&1 \
+            || say "note" "could not write index.html"
+    else
+        rampart "$LIPS/tools/make-download-index.js" --stage "$STAGE" \
+            >/dev/null 2>&1 || say "note" "could not write index.html"
+    fi
+}
 
 # -------------------------------------------------------------- kiwix
 # The kiwix-tools builds, mirrored from upstream. This used to tar up
@@ -449,3 +542,8 @@ echo "  rsync -a --partial --progress $STAGE/ rampart.dev:/var/www/downloads/alp
 echo
 echo "Every staged file is a real file or a hard link to one, so there is"
 echo "nothing to dereference and no -L to remember."
+
+index_html
+if [ "$DRY" -eq 0 ] && [ -f "$STAGE/index.html" ]; then
+    say "index.html" "$(du -h "$STAGE/index.html" | cut -f1), listing $(ls -1d "$STAGE"/corpus-2???-??-??* 2>/dev/null | wc -l) payloads"
+fi

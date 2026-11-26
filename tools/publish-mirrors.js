@@ -71,7 +71,31 @@ function dirFor(zim) {
     var w = /^(wikipedia|wiktionary|wikisource|wikibooks|wikiversity|wikivoyage|wikiquote|wikinews)_/
             .exec(zim);
     if (w) return w[1];
+    /* A Stack Exchange site whose name does not say so. */
+    if (/^mathoverflow\.net_/.test(zim))         return "stack_exchange";
     return "";
+}
+
+/* WHERE AN UNMATCHED ARCHIVE LIVES, asked rather than guessed. Twelve of
+   227 matched nothing above, and adding a regex each time an archive is
+   added is how that happened. zimit/ is where kiwix files what warc2zim
+   produced, which is the four site crawls in this corpus.
+
+   download.kiwix.org is mirrorbrain and 301s every path whether the file
+   is there or not, so this follows redirects and reads the FINAL status:
+   checking the first response reports whichever directory was tried
+   first as correct. */
+var PROBE_DIRS = ["other", "zimit", "stack_exchange", "gutenberg", "ifixit"];
+var probed = {};
+function dirProbe(zim) {
+    if (probed[zim] !== undefined) return probed[zim];
+    probed[zim] = "";
+    for (var i = 0; i < PROBE_DIRS.length; i++) {
+        var u = "https://download.kiwix.org/zim/" + PROBE_DIRS[i] + "/" + zim;
+        if (head(u) === 200) { probed[zim] = PROBE_DIRS[i]; break; }
+    }
+    if (probed[zim]) printf("  probed       %s -> %s/\n", zim, probed[zim]);
+    return probed[zim];
 }
 
 /* The job lists carry real metalink URLs, so where one exists it beats a
@@ -119,7 +143,7 @@ MIRRORS.forEach(function () { per.push(0); });
 zims.forEach(function (z) {
     var path = known[z];
     if (!path) {
-        var d = dirFor(z);
+        var d = dirFor(z) || dirProbe(z);
         if (!d) { nopath.push(z); return; }
         path = "zim/" + d + "/" + z;
     }

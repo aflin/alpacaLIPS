@@ -38,9 +38,10 @@
 #            run, a minute after that)
 #
 #   corpus   NOT in `all`: build the corpus download payload -- 277 GB
-#            read, ~115 GiB written, hours. Built in corpus-new/ beside
+#            read, ~115 GiB written, hours. Built in a dated directory,
 #            the live one and swapped in with renames, keeping the
-#            previous payload as corpus-old/ to roll back to.
+#            corpus-YYYY-MM-DD/, named in corpus-current.txt when it is
+#            complete. Earlier payloads stay published for a week.
 #   package  NOT in `all`: build the download payloads into
 #            downloads/alpacalips -- the corpus in gzip parts with a
 #            MANIFEST and checksums, the news, the runtime tarball, the
@@ -628,7 +629,8 @@ stage_package() {
 # The corpus payload: 277 GB read, ~115 GiB written, hours. Separate
 # from `package` because it is the only expensive one, and because it
 # replaces what the server is publishing -- which make-payloads does by
-# building corpus-new/ and renaming, never by deleting first.
+# writing a dated directory and naming it in corpus-current.txt when it
+# is finished -- never by renaming or deleting what is being served.
 stage_corpus() {
     head_ "corpus"
     LOG=$NOTES/build-corpus.log

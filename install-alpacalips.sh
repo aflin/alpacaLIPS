@@ -152,13 +152,26 @@ cp -R "$SRC/." "$DIR/" || die "cannot copy into $DIR"
 chmod +x "$DIR/setup.sh" "$DIR/servers.sh" 2>/dev/null || true
 say "unpacked" "$(cd "$DIR" && pwd)"
 
+# WHAT WAS JUST INSTALLED, recorded so setup.sh does not offer to
+# upgrade this release to itself. The tarball matched the published
+# sha256, so the published version.txt describes this tree. Skipped
+# after --no-verify: an unverified tree has no claim to a release.
+if [ "$VERIFY" -eq 1 ] && [ ! -f "$DIR/version.txt" ]; then
+    if fetch "$BASE/version.txt" "$TMP/version.txt" 2>/dev/null \
+       && grep -q "^runtime_sha256 ${got:-nothing}$" "$TMP/version.txt" 2>/dev/null; then
+        cp "$TMP/version.txt" "$DIR/version.txt" 2>/dev/null \
+            && say "version" "$(awk '$1 == "version" { print $2; exit }' \
+                                 "$DIR/version.txt")"
+    fi
+fi
+
 HOME_DIR=$(cd "$DIR" && pwd)
 next() {
     note ""
     note "next:"
     note "  cd $HOME_DIR"
     note "  ./setup.sh --check          what is published, and what is here"
-    note "  ./setup.sh --corpus         install the corpus (112G download)"
+    note "  ./setup.sh --corpus         install the corpus (130G download)"
     note "  ./servers.sh start          start the server once something is installed"
 }
 

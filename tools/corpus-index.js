@@ -221,12 +221,22 @@ WANT.forEach(function (w) {
 });
 
 printf("--- on disk ---\n");
-var fs = rampart.utils, tbl = 0, idx = 0;
+var fs = rampart.utils, tbl = 0, blb = 0, idx = 0;
 fs.readdir(D).forEach(function (f) {
     if (f.indexOf("corpus_test") === 0) return;   /* experiment leftovers */
+    /* corpus.blb is where a blobz Doc keeps its text, out of line, and it
+       is most of the table. Counting corpus.tbl alone reported 10 GiB for
+       an 89 GiB table, and an install 79 GiB smaller than it is. */
     if (f === "corpus.tbl") { tbl += Number(fs.stat(D + "/" + f).size); return; }
+    if (f === "corpus.blb") { blb += Number(fs.stat(D + "/" + f).size); return; }
     if (f.indexOf("corpus_") === 0) idx += Number(fs.stat(D + "/" + f).size);
 });
-printf("  table   %.2f GiB\n  indexes %.2f GiB\n  total   %.2f GiB  (%.3fx of table)\n",
-       tbl/1073741824, idx/1073741824, (tbl+idx)/1073741824,
-       tbl ? (tbl+idx)/tbl : 0);
+var tot = tbl + blb + idx;
+if (blb) {
+    printf("  table   %.2f GiB  (%.2f rows + %.2f compressed text)\n",
+           (tbl + blb)/1073741824, tbl/1073741824, blb/1073741824);
+} else {
+    printf("  table   %.2f GiB\n", tbl/1073741824);
+}
+printf("  indexes %.2f GiB\n  total   %.2f GiB  (an install needs this much)\n",
+       idx/1073741824, tot/1073741824);
