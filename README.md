@@ -11,7 +11,7 @@ network at query time. It answers two kinds of caller from one index:
   link to the original page in its own archive.
 
 It is built with [rampart](https://rampart.dev) and its SQL engine, and
-it is sized to run on one machine: the published corpus is 279 GiB
+it is sized to run on one machine: the published corpus is 166 GiB
 installed, and everything in it is publicly available material.
 
 This repository is the **build** side: the scripts that fetch the
@@ -25,7 +25,7 @@ runtime instead:
 curl -fsSL https://rampart.dev/install-alpacalips.sh | sh
 ```
 
-That fetches an 88 KB tarball into `./alpacalips`, checks it against its
+That fetches a 95 KB tarball into `./alpacalips`, checks it against its
 published checksum, asks what to install, and downloads it. It needs
 [rampart 0.7.5](https://rampart.dev/download.html) and installs it in the 
 same directory if rampart is not already installed. 
@@ -37,10 +37,10 @@ What it costs, as `setup.sh` reports it:
 
 | | download | on disk |
 |---|---|---|
-| **the corpus** — search, the MCP endpoint, the stored page text | 115 GiB | 279 GiB |
+| **the corpus** — search, the MCP endpoint, the stored page text | 130 GiB | 166 GiB |
 | **the ZIM archives** (optional download) — the original pages, images and tables, read offline | 538 GiB | 538 GiB |
-| **the news window** — a rolling three months, refreshed daily | 70 MiB | 82 MiB |
-| everything | 653 GiB | 817 GiB |
+| **the news window** — a rolling three months, refreshed daily | 73 MiB | 85 MiB |
+| everything | 668 GiB | 704 GiB |
 
 The corpus is the base install and the archives are optional: search,
 citations and the MCP tools all work without them, and what you give up is
@@ -48,10 +48,16 @@ reading the original, formatted page with links and images rather than just
 its text.  The archives take the same space they download, since a ZIM is
 already compressed.
 
-The corpus unpacks as it streams, so it needs about **286 GiB** free at
+The corpus unpacks as it streams, so it needs about **176 GiB** free at
 peak: the database plus the couple of 5 GiB parts in flight. `setup.sh`
 checks free space before it starts. `--keep-parts` keeps every part
-instead, which needs 391 GiB and makes a retry cheap.
+instead, which needs 296 GiB and makes a retry cheap.
+
+The download is larger than the installed size would suggest, and that is
+the right way round: the stored text is compressed in the database, so it
+travels at close to its on-disk size while the indexes still compress in
+the payload. Compressing the text took 113 GiB off every install and put
+15 GiB back on the download.
 
 Updating is `./setup.sh --upgrade`: it takes the published runtime and
 replaces the program files, leaving the corpus, the archives and your
@@ -116,10 +122,11 @@ The corpus therefore ships with keyword ranking only: no model to load at
 query time and no embedding pass over 50M documents.
 
 **The text is stored, the pictures are not.** The corpus table holds the
-plain text of each page — 217 GB of it. Pictures, styling and layout
-stay in the ZIM archives, so every result offers two links: the stored
-text, and the original page in its archive with its pictures intact.
-A corpus-only install is 279 GiB; adding the archives is another 538 GiB.
+plain text of each page — 217 GB of it, kept compressed, which is how 217
+GB of text fits in a 90 GiB table. Pictures, styling and layout stay in
+the ZIM archives, so every result offers two links: the stored text, and
+the original page in its archive with its pictures intact.
+A corpus-only install is 166 GiB; adding the archives is another 538 GiB.
 The smaller download is not a preview: the text of every document is
 complete, so an answer can still quote its source and cite it. The
 archives add a faithful offline copy of that source — the page as
@@ -148,7 +155,7 @@ alternatives and why, and the open questions.
 * **kiwix-tools** (`kiwix-serve`, `kiwix-manage`) — only to serve the
   archives; `tools/setup-kiwix.sh` installs them into `zim/bin`
 * Space: ~535 GiB of archives, up to 1.7 TB of extracted staging (can be
-  dropped as it goes), ~800 GB of database
+  dropped as it goes), ~370 GiB of database
 * Time: a few days of downloading, about two days of importing, and
   about half a day of indexing
 
@@ -169,7 +176,9 @@ by `.gitignore`:
 downloads/    archives/ the ZIM archives (~535 GiB), meta/ the job
               lists, staging/ the extracted JSONL (up to 1.7 TB), and
               alpacalips/ the payloads packed for publishing
-build/        the tables and their indexes: corpus/ the corpus (~800 GB),
+build/        the tables and their indexes: corpus/ the corpus (~370 GiB,
+              of which 166 GiB is the corpus and its indexes and the rest
+              the per-archive tables the merge reads),
               news/ and news-src/ the news window
 zim/          what serving needs and nothing else: library.xml, the
               kiwix binaries, the pid file. NOT the archives -- those
@@ -178,7 +187,7 @@ notes/        run logs and the lists the build derives as it goes
 dist/         the two trees tools/make-dist.sh assembles
 ```
 
-That is ~2.4 TB on one disk, and nothing is written outside the clone:
+That is ~2 TB on one disk, and nothing is written outside the clone:
 no system directories, no sibling staging tree, and **no links at all** --
 every archive is one file in the one directory it is read from and served
 from. `rm -rf` on the clone therefore reclaims everything, and a copy of
@@ -261,8 +270,8 @@ the Wikipedia dump. The news window fills that gap: Wikipedia's
 them, packed into their own ZIM and their own small table.
 
 It is separate on purpose. The corpus index is never rebuilt for it, the
-window can be replaced daily, and it is a 70 MB download rather than a
-276 GiB one.
+window can be replaced daily, and it is a 73 MB download rather than a
+130 GiB one.
 
 ```sh
 tools/news-daily.sh            # the whole thing, safe from cron
