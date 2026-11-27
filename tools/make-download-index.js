@@ -200,6 +200,21 @@ row("inventory.json", "the same, for programs");
 row("corpus-current.txt", "names the current payload directory");
 b.push("</table>");
 
+if (stat(STAGE + "/news") || stat(STAGE + "/archives")
+    || stat(STAGE + "/kiwix")) {
+    b.push("<h2>Also published</h2>");
+    b.push("<table><tr><th>directory</th><th>what it is</th></tr>");
+    [["news", "the rolling news window, refreshed daily"],
+     ["archives", "which ZIM archives this corpus was built from, and "
+                  + "where to fetch them"],
+     ["kiwix", "kiwix-serve, for reading the archives"]].forEach(function (d) {
+        if (!stat(STAGE + "/" + d[0])) return;
+        b.push("<tr><td><a href=\"" + esc(d[0]) + "/index.html\"><code>"
+             + esc(d[0]) + "/</code></a></td><td>" + d[1] + "</td></tr>");
+    });
+    b.push("</table>");
+}
+
 b.push("<h2>Licences</h2>");
 b.push("<p class=\"note\">The corpus collects freely licensed sources, mostly"
      + " CC BY-SA and public domain, and each reader page shows the terms for"
@@ -269,3 +284,119 @@ payloads.forEach(function (p) {
     writeFile(out, page(p.dir + " — alpacaLIPS", q.join("\n")));
     printf("  wrote %s/index.html (%d parts)\n", p.dir, p.parts.length);
 });
+
+/* ---- the other published directories ------------------------------ */
+function dirFiles(d) {
+    var out = [];
+    if (!stat(STAGE + "/" + d)) return out;
+    readDir(STAGE + "/" + d).forEach(function (f) {
+        var st = stat(STAGE + "/" + d + "/" + f);
+        /* Not the page being written: it is in the directory it describes. */
+        if (f === "index.html") return;
+        if (st && !st.isDirectory) out.push({ name: f, bytes: Number(st.size) || 0 });
+    });
+    out.sort(function (a, b) { return a.name < b.name ? -1 : 1; });
+    return out;
+}
+function fileTable(d, files) {
+    var t = ["<table><tr><th>file</th><th class=\"n\">size</th></tr>"];
+    files.forEach(function (f) {
+        t.push("<tr><td><a href=\"" + esc(f.name) + "\"><code>" + esc(f.name)
+             + "</code></a></td><td class=\"n\">" + esc(human(f.bytes))
+             + "</td></tr>");
+    });
+    t.push("</table>");
+    return t.join("\n");
+}
+
+/* news: the window it currently describes, and the split that matters --
+   every install needs the table, only a kiwix install needs the ZIM. */
+var nf = dirFiles("news");
+if (nf.length) {
+    var w = {};
+    try { w = JSON.parse(slurp(STAGE + "/news/window.json") || "{}"); } catch (e) {}
+    var n = [];
+    n.push("<h1>News</h1>");
+    n.push("<p class=\"sub\">A rolling window of current-events articles, "
+         + "refreshed daily and kept separate from the corpus.</p>");
+    if (w.asof || w.zim) {
+        n.push("<dl>");
+        if (w.asof) n.push("<dt>as of</dt><dd>" + esc(w.asof) + "</dd>");
+        if (w.from && w.to)
+            n.push("<dt>window</dt><dd>" + esc(w.from) + " to " + esc(w.to) + "</dd>");
+        if (w.articles) n.push("<dt>articles</dt><dd>" + esc(w.articles) + "</dd>");
+        if (w.zimScraper)
+            n.push("<dt>built with</dt><dd>" + esc(w.zimScraper) + "</dd>");
+        n.push("</dl>");
+    }
+    n.push("<h2>Refresh an install</h2>");
+    n.push("<pre>./setup.sh --news</pre>");
+    n.push("<p class=\"note\">Two files on purpose: the table is what every "
+         + "install needs and is small enough to re-fetch daily, while the "
+         + "ZIM is only useful to an install that already has archives and a "
+         + "kiwix to read them with. A corpus-only install should not download "
+         + "60 MB of pictures to get the news.</p>");
+    n.push("<h2>Files</h2>");
+    n.push(fileTable("news", nf));
+    n.push("<p class=\"note\"><a href=\"../index.html\">All downloads</a></p>");
+    writeFile(STAGE + "/news/index.html", page("News — alpacaLIPS", n.join("\n")));
+    printf("  wrote news/index.html (%d files)\n", nf.length);
+}
+
+/* archives: the ZIMs are NOT here, and that is the whole point of the
+   page -- a 404 leaves a reader no way to find that out. */
+var af = dirFiles("archives").filter(function (f) {
+    return !/\.zim$/.test(f.name) && !/\.zim\.sha256$/.test(f.name);
+});
+if (af.length) {
+    var amf = parts(slurp(STAGE + "/archives/MANIFEST"));
+    var abytes = 0;
+    amf.forEach(function (x) { abytes += x.bytes; });
+    var nmirrors = slurp(STAGE + "/archives/MIRRORS")
+                       .split("\n").filter(function (l) { return /\S/.test(l); }).length;
+    var a = [];
+    a.push("<h1>Archives</h1>");
+    a.push("<p class=\"sub\">" + amf.length + " ZIM archives, "
+         + esc(human(abytes)) + " in total. They are not hosted here.</p>");
+    a.push("<h2>Where they come from</h2>");
+    a.push("<p class=\"note\">The archives are mirrored by people whose job "
+         + "it is, and those mirrors are nearer most installs than this host. "
+         + "What is published here is the list: which archives this corpus was "
+         + "built from, their sizes and hashes, and which of the "
+         + esc(nmirrors) + " mirrors carries each one. Coverage differs per "
+         + "mirror, so it is recorded per archive rather than assumed.</p>");
+    a.push("<h2>Fetch them</h2>");
+    a.push("<pre>./setup.sh --archives</pre>");
+    a.push("<p class=\"note\">The installer measures the mirrors, keeps the "
+         + "fastest that carry what it needs, and spreads each archive's "
+         + "ranges across them. Optional: search and the MCP server work "
+         + "entirely from the corpus, and the archives are for reading the "
+         + "original pages in kiwix.</p>");
+    a.push("<h2>The list</h2>");
+    a.push(fileTable("archives", af));
+    a.push("<p class=\"note\"><code>MANIFEST</code> is name and size, "
+         + "<code>MIRRORS</code> the base URLs, and <code>UPSTREAM</code> maps "
+         + "each archive to a path and the mirrors that have it.</p>");
+    a.push("<p class=\"note\"><a href=\"../index.html\">All downloads</a></p>");
+    writeFile(STAGE + "/archives/index.html",
+              page("Archives — alpacaLIPS", a.join("\n")));
+    printf("  wrote archives/index.html (%d archives listed in MANIFEST)\n",
+           amf.length);
+}
+
+var kf = dirFiles("kiwix");
+if (kf.length) {
+    var k = [];
+    k.push("<h1>kiwix-serve</h1>");
+    k.push("<p class=\"sub\">Builds of kiwix-serve, mirrored here so an "
+         + "install fetches them from the same host as everything else.</p>");
+    k.push("<h2>Install it</h2>");
+    k.push("<pre>./setup.sh --kiwix</pre>");
+    k.push("<p class=\"note\">Only needed to read the ZIM archives. The "
+         + "corpus serves its text without it.</p>");
+    k.push("<h2>Files</h2>");
+    k.push(fileTable("kiwix", kf));
+    k.push("<p class=\"note\"><a href=\"../index.html\">All downloads</a></p>");
+    writeFile(STAGE + "/kiwix/index.html", page("kiwix — alpacaLIPS", k.join("\n")));
+    printf("  wrote kiwix/index.html (%d files)\n", kf.length);
+}

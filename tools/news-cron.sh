@@ -44,6 +44,10 @@ if [ -z "$PUBLISH" ] && [ -r config.local.sh ]; then
     done
 fi
 PUBLISH=${PUBLISH:-$HERE/downloads/alpacalips}
+# Where the payload is published to, if anywhere. Same default as
+# publish-r2.sh, and overridable the same way.
+LIPS_R2_REMOTE=${LIPS_R2_REMOTE:-r2:alpacalips}
+export LIPS_R2_REMOTE
 
 mkdir -p "$HERE/notes"
 LOG=$HERE/notes/news-cron.log
@@ -76,6 +80,20 @@ if ! tools/make-payloads.sh --news --sha --stage "$PUBLISH" >> "$LOG" 2>&1; then
     log "FAILED -- publishing to $PUBLISH"
     echo "alpacaLIPS: publishing the news payload failed. See $LOG" >&2
     exit 1
+fi
+
+# Downloads are served from object storage, so staging is not the last
+# step any more: an install asks the download host, not this disk. Skipped
+# quietly where no remote is configured, which is every machine that
+# builds the news for itself.
+if [ -x tools/publish-r2.sh ] && command -v rclone >/dev/null 2>&1 \
+   && rclone listremotes 2>/dev/null | grep -q "^${LIPS_R2_REMOTE%%:*}:"; then
+    if ! tools/publish-r2.sh --news -y >> "$LOG" 2>&1; then
+        log "FAILED -- uploading the news payload"
+        echo "alpacaLIPS: the news payload was staged but not uploaded. See $LOG" >&2
+        exit 1
+    fi
+    log "uploaded to ${LIPS_R2_REMOTE}"
 fi
 
 # The window that is now live, so the log says what each run achieved

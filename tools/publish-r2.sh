@@ -53,6 +53,9 @@ PREFIX=${LIPS_R2_PREFIX:-alpacalips}
 STAGE_DIR=${DOWNLOAD_DIR:-$LIPS/downloads/alpacalips}
 PUBLIC=${LIPS_PUBLIC_BASE:-https://dl.moatxing.com}
 WANT_ARCHIVES=0
+# --news: the daily refresh. Only news/ goes up, and nothing that
+# describes the corpus is touched.
+ONLY_NEWS=0
 DRY=0
 YES=0
 NOTES=${NOTES:-$LIPS/notes}
@@ -64,6 +67,7 @@ while [ $# -gt 0 ]; do
         --stage)    STAGE_DIR=$2; shift 2 ;;
         --public)   PUBLIC=${2%/}; shift 2 ;;
         --archives) WANT_ARCHIVES=1; shift ;;
+        --news)     ONLY_NEWS=1; shift ;;
         --dry-run)  DRY=1; shift ;;
         -y|--yes)   YES=1; shift ;;
         -h|--help)  grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -88,6 +92,35 @@ esac
 # not there. Clients would read it, fetch nothing, and the previous
 # payload would already have stopped being current.
 PTR=$STAGE_DIR/corpus-current.txt
+if [ "$ONLY_NEWS" -eq 1 ]; then
+    [ -d "$STAGE_DIR/news" ] || die "no news payload staged in $STAGE_DIR/news"
+    [ -f "$STAGE_DIR/news/MANIFEST" ] \
+        || die "$STAGE_DIR/news has no MANIFEST -- it was never finished"
+    echo "=== publish the news payload to R2"
+    # The news page describes the window, which this run has just changed.
+    if [ -f "$LIPS/tools/make-download-index.js" ]; then
+        rampart "$LIPS/tools/make-download-index.js" --stage "$STAGE_DIR" \
+            >/dev/null 2>&1 || say "note" "could not regenerate the pages"
+    fi
+    say "from" "$STAGE_DIR/news"
+    say "to" "$REMOTE${PREFIX:+/$PREFIX}/news"
+    rclone lsjson --max-depth 1 "$REMOTE" >/dev/null 2>&1 \
+        || die "cannot list $REMOTE -- check the remote and the token's scope"
+    rclone sync "$STAGE_DIR/news" "$REMOTE${PREFIX:+/$PREFIX}/news" \
+        --delete-after --header-upload "Cache-Control: public, max-age=300" \
+        --transfers 4 --checkers 8 --s3-chunk-size 64M \
+        --stats-one-line --stats 30s 2>&1 | tail -3 | sed 's/^/  /'
+    _ph=$(printf '%s' "${PUBLIC:-}" | sed -e 's#^https\{0,1\}://##' -e 's#/.*##')
+    if [ -n "$_ph" ] && getent hosts "$_ph" >/dev/null 2>&1; then
+        _nm=$(curl -fsL --max-time 60 "$PUBLIC${PREFIX:+/$PREFIX}/news/MANIFEST" \
+                  2>/dev/null | grep -c . || echo 0)
+        say "readable" "$_nm manifest lines through $_ph"
+    else
+        say "checks skipped" "${_ph:-the public host} does not resolve here"
+    fi
+    say "done" "news only; the corpus pointer was not touched"
+    exit 0
+fi
 [ -f "$PTR" ] || die "no corpus-current.txt in $STAGE_DIR -- nothing has been packed"
 CUR=$(tr -d ' \t\r\n' < "$PTR")
 [ -n "$CUR" ] || die "corpus-current.txt is empty"
